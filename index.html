@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+body{
+margin:0;
+}
+</style>
+</head>
+<body>
+
+
+<div id="project">
+
+
+<canvas id="canvas" style="display:block;"></canvas>
+<div id="total_time" style="position:absolute;z-index:2;top:50%;left:0;color:#ffffff;"></div>
+
+
+</div>
+
+
+<script type="importmap">
+{
+"imports":{
+"three":"./js/0_three/three_185.js",
+"three/addons/":"./js/0_three/"
+}
+}
+</script>
+<script type="module">
+
+
+"use strict"
+
+
+import {Game} from './js/game.js';
+const game=new Game();
+
+
+</script>
+</body>
+</html>
