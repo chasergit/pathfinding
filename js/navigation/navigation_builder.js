@@ -1,12 +1,13 @@
 import {BufferAttribute,BufferGeometry} from "three";
 import {navigation_grid} from "./navigation_grid.js";
+import {navigation_detail_mesh} from "./navigation_detail_mesh.js";
 
 
-const area_xz_degeneracy=1e-5 // 0.00001 КВ.М. — ЭТО ПОРОГ ДЛЯ ТРЕУГОЛЬНИКОВ-НИТОК (МУСОР)
+const area_xz_degeneracy=1e-5; // 0.00001 КВ.М. — ЭТО ПОРОГ ДЛЯ ТРЕУГОЛЬНИКОВ-НИТОК (МУСОР)
 const plane_length_sq_degeneracy=1e-12; // ПОГРЕШНОСТЬ ДЛЯ ОПРЕДЕЛЕНИЯ ВЫРОЖДЕННОСТИ ТРЕУГОЛЬНИКА (МУСОР)
 
 
-class navigation_builder {
+class navigation_builder{
 
 
 // ____________________ build_zone ____________________
@@ -27,7 +28,14 @@ max_slope_deviaton_dot-НА СКОЛЬКО СИЛЬНО ДОЛЖНЫ БЫТЬ Т
 static build_zone(options){
 
 
-let {zone_name,geometry,tolerance,precision,max_slope_deviaton_dot,navigation_grid_padding_xz,navigation_grid_padding_y,navigation_grid_cells_size_xz,navigation_grid_cells_size_y}=options;
+let start_time=performance.now();
+
+
+let {zone_name,geometry,detail_mesh,tolerance,precision,max_slope_deviaton_dot,
+navigation_grid_cells_padding_xz,navigation_grid_cells_padding_y,navigation_grid_cells_size_xz,navigation_grid_cells_size_y,
+navigation_detail_mesh_climb,navigation_detail_mesh_height,
+navigation_detail_mesh_max_slope_degrees,navigation_detail_mesh_cells_padding_xz,navigation_detail_mesh_cells_padding_y,navigation_detail_mesh_cells_size_xz,navigation_detail_mesh_cells_size_y,
+}=options;
 
 
 /** НАЧАЛО NAVIGATION MESH **/
@@ -110,10 +118,12 @@ let cx=c.x,cy=c.y,cz=c.z;
 
 /** ЦЕНТРОИД **/
 let centroid_scalar=1/3;
-let centroid={x:(ax+bx+cx)*centroid_scalar,y:(ay+by+cy)*centroid_scalar,z:(az+bz+cz)*centroid_scalar};
+let centroid_x=(ax+bx+cx)*centroid_scalar;
+let centroid_y=(ay+by+cy)*centroid_scalar;
+let centroid_z=(az+bz+cz)*centroid_scalar;
 
 
-/** ЗАРАНЕЕ РАСЧИТЫВАЕМ ВЕКТОРА РЁБЕР **/
+/** ВЕКТОРА РЁБЕР **/
 let abx=bx-ax;
 let aby=by-ay;
 let abz=bz-az;
@@ -134,7 +144,7 @@ let cay=-acy;
 let caz=-acz;
 
 
-/** ЗАРАНЕЕ РАСЧИТЫВАЕМ ПЛОСКОСТЬ И ОТСЕИВАЕМ ОШИБОЧНЫЕ (plane.setFromCoplanarPoints) **/
+/** РАСЧИТЫВАЕМ ПЛОСКОСТЬ И ОТСЕИВАЕМ ОШИБОЧНЫЕ (plane.setFromCoplanarPoints) **/
 let nx=bcy*(-abz)-bcz*(-aby);
 let ny=bcz*(-abx)-bcx*(-abz);
 let nz=bcx*(-aby)-bcy*(-abx);
@@ -146,11 +156,11 @@ const area_xz=Math.abs(abx*acz-acx*abz);
 
 
 if(area_xz<area_xz_degeneracy){
-console.log("ОШИБКА. ВЫРОЖДЕННЫЙ ТРЕУГОЛЬНИК area_xz="+area_xz+" НА УЗЛЕ "+triangle.id);
+console.warn("Navigation builder. Вырожденнный треугольник area_xz="+area_xz+" НА УЗЛЕ "+triangle.id);
 }
 
 
-/** ПОРОГ 1E-8 ОТСЕЧЁТ ОШИБОЧНЫЕ ТРЕУГОЛЬНИКИ, КОТОРЫЕ ПОТОМ МОГУТ ВЫЗВАТЬ ПРОБЛЕМЫ В РАСЧЁТАХ **/
+/** ПОРОГ ОТСЕЧЁТ ВЫРОЖДЕННЫЕ (ОШИБОЧНЫЕ) ТРЕУГОЛЬНИКИ, КОТОРЫЕ ПОТОМ МОГУТ ВЫЗВАТЬ ПРОБЛЕМЫ В РАСЧЁТАХ **/
 if(plane_length_sq>plane_length_sq_degeneracy){
 const invLen=1/Math.sqrt(plane_length_sq);
 nx*=invLen;
@@ -158,8 +168,24 @@ ny*=invLen;
 nz*=invLen;
 }
 else{
-console.log("ОШИБКА. ВЫРОЖДЕННЫЙ ТРЕУГОЛЬНИК plane_length_sq="+plane_length_sq+" НА УЗЛЕ "+triangle.id);
+console.warn("Navigation builder. Вырожденнный треугольник plane_length_sq="+plane_length_sq+" НА УЗЛЕ "+triangle.id);
 }
+
+
+if(ny<0.01){ console.warn("Navigation builder. Вырожденнный треугольник ny="+ny+" НА УЗЛЕ "+triangle.id); }
+
+
+const dot00=abx*abx+abz*abz;
+const dot01=abx*acx+abz*acz;
+const dot11=acx*acx+acz*acz;
+
+
+const denom=dot00*dot11-dot01*dot01;
+
+
+// denom-ЭТО МАТЕМАТИЧЕСКИЙ ПОКАЗАТЕЛЬ ПЛОЩАДИ И ПРАВИЛЬНОСТИ ФОРМЫ ТРЕУГОЛЬНИКА НА ПЛОСКОСТИ XZ. ЕСЛИ ОН СЛИШКОМ МАЛ, ТРЕУГОЛЬНИК СЧИТАЕТСЯ "ВЫРОЖДЕННЫМ"
+// AAA-СТАНДАРТ ДЛЯ FLOAT 32
+if(denom<0.000001){ console.warn("Navigation builder. Вырожденнный треугольник denom="+denom+" НА УЗЛЕ "+triangle.id); }
 
 
 let plane_constant=-(ax*nx+ay*ny+az*nz);
@@ -172,11 +198,14 @@ let ca_length_sq_xz=cax*cax+caz*caz;
 
 
 let ab_length_xz=Math.sqrt(ab_length_sq_xz);
-let inv_ab_length_xz=ab_length_xz!==0?1/ab_length_xz:0;
-let inv_ab_length_sq_xz=ab_length_sq_xz!==0?1/ab_length_sq_xz:0;
 
 
 /** СОЗДАЁМ СВОЙСТВА ТРЕУГОЛЬНИКА **/
+
+
+// ТАК КАК ВЫРОЖДЕННЫЕ ТРЕУГОЛЬНИКИ УБРАНЫ, ТО ЗАПИСЫВАЕМ ИНВЕРТИРОВАННЫЕ ПЕРЕМЕННЫЕ БЕЗ ПРОВЕРКИ ДЕЛЕНИЯ НА 0
+
+
 nodes[n]={
 id:triangle.id,
 group_id:-1,
@@ -189,10 +218,10 @@ vertex_ids:triangle.vertex_ids,
 vertex_a:a,
 vertex_b:b,
 vertex_c:c,
-centroid:centroid,
-centroid_x:centroid.x,
-centroid_y:centroid.y,
-centroid_z:centroid.z,
+centroid:{x:centroid_x,y:centroid_y,z:centroid_z},
+centroid_x:centroid_x,
+centroid_y:centroid_y,
+centroid_z:centroid_z,
 // ЗДЕСЬ ИСПОЛЬЗУЕМ TRUE ИЛИ FALSE ВМЕСТО МАСОК, Т.К. У НАС ЗНАЧЕНИЯ СТАТИЧНЫ И НА СКОРОСТЬ НЕ ПОВЛИЯЮТ
 ab_is_abyss:triangle.ab_is_abyss,
 bc_is_abyss:triangle.bc_is_abyss,
@@ -215,18 +244,18 @@ ab_length_sq_xz:ab_length_sq_xz,
 bc_length_sq_xz:bc_length_sq_xz,
 ca_length_sq_xz:ca_length_sq_xz,
 ab_length_xz:ab_length_xz,
-inv_ab_length_xz:inv_ab_length_xz,
-inv_ab_length_sq_xz:inv_ab_length_sq_xz,
-// ОБХОДИМ ДЕЛЕНИЕ НА НОЛЬ
-inv_ab_length_sq_xz:ab_length_sq_xz===0?0:1/ab_length_sq_xz,
-inv_bc_length_sq_xz:bc_length_sq_xz===0?0:1/bc_length_sq_xz,
-inv_ca_length_sq_xz:ca_length_sq_xz===0?0:1/ca_length_sq_xz,
+inv_ab_length_xz:1/ab_length_xz,
+inv_ab_length_sq_xz:1/ab_length_sq_xz,
+inv_bc_length_sq_xz:1/bc_length_sq_xz,
+inv_ca_length_sq_xz:1/ca_length_sq_xz,
 // ДАННЫЕ ПЛОСКОСТИ
 nx:nx,
 ny:ny,
-// ОБХОДИМ ДЕЛЕНИЕ НА НОЛЬ
-inv_ny:ny!==0?1/ny:0,
 nz:nz,
+inv_ny:1/ny,
+scaled_nx:-nx/ny,
+scaled_nz:-nz/ny,
+scaled_constant:-plane_constant/ny,
 nxnx:nx*nx,
 nyny:ny*ny,
 nznz:nz*nz,
@@ -266,17 +295,31 @@ convex_polygons=this.build_centroids_for_convex_polygons(convex_polygons);
 
 /** СОБИРАЕМ ЗОНУ **/
 
-let pre_navigation_grid=new navigation_grid();
-pre_navigation_grid.build(nodes,vertices,navigation_grid_padding_xz,navigation_grid_padding_y,navigation_grid_cells_size_xz,navigation_grid_cells_size_y);
-
 
 const zone={
 nodes:nodes,
 vertices:vertices,
 groups:this.build_triangles_groups(nodes), // ДОБАВЛЯЕМ ОСТРОВКИ ТРЕУГОЛЬНИКОВ В ГРУППЫ
 nodes_2:convex_polygons,
-navigation_grid:pre_navigation_grid
+detail_mesh_nodes:[],
+navigation_grid:{},
+navigation_detail_mesh_climb:navigation_detail_mesh_climb,
+navigation_detail_mesh_height:navigation_detail_mesh_height,
+navigation_detail_mesh:{}
 };
+
+
+console.log("build_zone: "+(performance.now()-start_time).toFixed(2)+"ms. Nodes_2: "+convex_polygons.length);
+
+
+let pre_navigation_grid=new navigation_grid(navigation_grid_cells_padding_xz,navigation_grid_cells_padding_y,navigation_grid_cells_size_xz,navigation_grid_cells_size_y);
+pre_navigation_grid.add(nodes);
+zone.navigation_grid=pre_navigation_grid;
+
+
+let pre_navigation_detail_mesh=new navigation_detail_mesh(zone.detail_mesh_nodes,navigation_detail_mesh_max_slope_degrees,navigation_detail_mesh_cells_padding_xz,navigation_detail_mesh_cells_padding_y,navigation_detail_mesh_cells_size_xz,navigation_detail_mesh_cells_size_y);
+pre_navigation_detail_mesh.add(detail_mesh);
+zone.navigation_detail_mesh=pre_navigation_detail_mesh;
 
 
 return zone;
@@ -599,7 +642,7 @@ static set_counter_clockwise(geometry){
 	
 	
 const indices=geometry.getIndex();
-const positions=geometry.getAttribute('position');
+const positions=geometry.getAttribute("position");
 
 
 if(!indices){ 
@@ -608,30 +651,46 @@ return;
 }
 
 
-const array=indices.array; 
+const index_array=indices.array; 
+const position_array=positions.array;
 const count=indices.count;
 
 
 for(let i=0;i<count;i+=3){
 	
 	
-const idx1=array[i];
-const idx2=array[i+1];
-const idx3=array[i+2];
+const idx1=index_array[i];
+const idx2=index_array[i+1];
+const idx3=index_array[i+2];
 
 
-const p1x=positions.getX(idx1),p1z=positions.getZ(idx1);
-const p2x=positions.getX(idx2),p2z=positions.getZ(idx2);
-const p3x=positions.getX(idx3),p3z=positions.getZ(idx3);
+const i1=idx1*3;
+const p1x=position_array[i1];
+const p1z=position_array[i1+2];
 
 
+const i2=idx2*3;
+const p2x=position_array[i2];
+const p2z=position_array[i2+2];
+
+
+const i3=idx3*3;
+const p3x=position_array[i3];
+const p3z=position_array[i3+2];
+
+
+// РАСЧЁТ ЗНАКОВОЙ ПЛОЩАДИ
 const winding=(p2x-p1x)*(p3z-p1z)-(p2z-p1z)*(p3x-p1x);
 
 
-// ЕСЛИ ТРЕУГОЛЬНИК ПО ЧАСОВОЙ СТРЕЛКЕ (winding>0), ТО МЫ МЕНЯЕМ МЕСТАМИ ИНДЕКСЫ, ЧТОБЫ РАЗВЕРНУТЬ ЕГО ПРОТИВ ЧАСОВОЙ (CCW)
-if(winding>0){
-array[i+1]=idx3;
-array[i+2]=idx2;
+// ЕСЛИ ТРЕУГОЛЬНИК ПО ЧАСОВОЙ СТРЕЛКЕ (>area_xz_degeneracy), РАЗВОРАЧИВАЕМ ЕГО
+if(winding>area_xz_degeneracy){
+index_array[i+1]=idx3;
+index_array[i+2]=idx2;
+} 
+// ЕСЛИ winding НАХОДИТСЯ В МЁРТВОЙ ЗОНЕ (ОТ -area_xz_degeneracy ДО area_xz_degeneracy), ТРЕУГОЛЬНИК ВЫРОЖДЕННЫЙ
+else if (winding>-area_xz_degeneracy && winding<area_xz_degeneracy){
+console.warn(`set_counter_clockwise: ВЫРОЖДЕННЫЙ ТРЕУГОЛЬНИК (ПЛОЩАДЬ СЛИШКОМ МАЛА) НА ИТЕРАЦИИ ${i/3}`);
 }
 
 

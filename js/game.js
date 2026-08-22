@@ -1,13 +1,14 @@
 /*
 let node_id=10;
-let current_pos=[-3.3745537771495986,0.5395085876936967,4.277031691637208];
-let desired_target=[-2.4190906172030804,2.3664538860321045,1.0925142885259975];
+let current_pos={x:-3.3745537771495986,y:0.5395085876936967,z:4.277031691637208};
+let desired_target={x:-2.4190906172030804,y:2.3664538860321045,z:1.0925142885259975};
 let min=9090;
+let agent=aaa.crowd.agents["0"];
 for(let z=0;z<5;z++){
 let started=performance.now();
 for(let n=0;n<200000;n++){
-new_agent.node_id=node_id;
-move_along_surface(new_agent,current_pos,desired_target,null);
+agent.node_id=node_id;
+move_along_surface(agent,current_pos,desired_target,null,false);
 }
 let elap=performance.now()-started;
 if(min>elap){ min=elap; }
@@ -15,8 +16,7 @@ if(min>elap){ min=elap; }
 console.log(min);
 
 
-654ms
-256ms
+316ms
 */
 
 
@@ -33,7 +33,7 @@ agent.position.set(3.5323287795936005,0.36645400524139404,-4.591340806508383);
 for(let z=0;z<5;z++){
 let started=performance.now();
 for(let n=0;n<20000;n++){
-aaa.pathfinder.find_path(agent,end_position);
+aaa.pathfinder.find_simple_path(agent,end_position);
 }
 let elap=performance.now()-started;
 if(min>elap){ min=elap; }
@@ -49,7 +49,7 @@ console.log(min);
 
 let ppp={x:6.687823714895098,y:0.5961082204855845,z:3.7702620598914383};
 let clamped_position={x:0,y:0,z:0};
-let node=aaa.pathfinder.zones.island.nodes[3];
+let node=aaa.pathfinder.nodes[3];
 let min=9090;
 for(let z=0;z<5;z++){
 let started=performance.now();
@@ -81,13 +81,14 @@ let mesh=[];
 let helper=[];
 
 
+let agents;
+let agents_count=0;
+
+
 let GLTFLoader=new THREE_GLTFLoader.GLTFLoader();
 
 
 let global_scale=1;
-
-
-
 
 
 class Game{
@@ -106,9 +107,6 @@ this.zone_name="island";
 
 
 let project=document.getElementById("project");
-
-
-
 
 
 function createPanel(){
@@ -153,13 +151,13 @@ function showSkeleton(visibility){
 }
 
 
-this.camera=new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 0.01, 30000 );
-this.camera.position.set( 0, 10*global_scale, 0 );
+this.camera=new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 30000);
+this.camera.position.set(0, 10*global_scale, 0);
 this.camera.lookAt(0,0,0);
 
 
 this.scene=new THREE.Scene();
-this.scene.background=new THREE.Color( 0xaaaaff );
+this.scene.background=new THREE.Color(0xaaaaff);
 
 
 
@@ -172,16 +170,28 @@ const mesh_debug_meter=new THREE.Mesh(geometry,material);
 this.scene.add(mesh_debug_meter);
 
 console.log(this.scene);
-const ambient=new THREE.HemisphereLight(0x555555, 0x999999);
+const ambient=new THREE.HemisphereLight(0x555555,0x999999);
 this.scene.add(ambient);
 
 
-this.sun=new THREE.DirectionalLight( 0xAAAAFF, 1.0 );
-this.sun.position.set( 0, 1, 0.5);
+this.sun=new THREE.DirectionalLight(0xffffff,4.0);
+this.sun.position.set(0,10,5);
 this.sun.target.position.set(0,0,0);
+this.sun.castShadow=true;
+this.sun.shadow.mapSize.width=2048; // 8192 - ВЫЗЫВАЕТ БОЛЬШУЮ НАГРУЗКУ НА ВИДЕОКАРТУ, ЕСЛИ ПОСТОЯННОЕ ОБНОВЛЕНИЕ ТЕНЕЙ
+this.sun.shadow.mapSize.height=2048; // 8192 - ВЫЗЫВАЕТ БОЛЬШУЮ НАГРУЗКУ НА ВИДЕОКАРТУ, ЕСЛИ ПОСТОЯННОЕ ОБНОВЛЕНИЕ ТЕНЕЙ
+this.sun.shadow.camera.near=1.0;
+this.sun.shadow.camera.far=2000;
+this.sun.shadow.camera.left=-10;
+this.sun.shadow.camera.right=10;
+this.sun.shadow.camera.top=10;
+this.sun.shadow.camera.bottom=-10;
+this.sun.shadow.bias=0;
+this.sun.shadow.normalBias=0.01;
+this.sun.shadow.radius=0.2; // 1 - DEFAULT
+this.sun.shadow.blurSamples=2; // 8 - DEFAULT
 
-
-this.scene.add( this.sun );
+this.scene.add(this.sun);
 
 
 this.renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:false,alpha:true,premultipliedAlpha:true,logarithmicDepthBuffer:false});
@@ -221,7 +231,7 @@ project.appendChild(this.renderer_stats.renderer_stats_canvas);
 }
 
 
-this.controls= new OrbitControls( this.camera, this.renderer.domElement );
+this.controls= new OrbitControls(this.camera, this.renderer.domElement);
 this.controls.damping=0.2;
 
 this.timer=new THREE.Timer();
@@ -246,21 +256,22 @@ window.addEventListener("resize", this.resize.bind(this));
 raycast(e){
 
 
-if(this.loading){ return; }
+let agent=agents["0"];
+if(agent.state!=1){ return; }
 
 
 let mouse={x:0,y:0};
 let raycaster=this.raycaster;
 
 
-mouse.x=( e.clientX / window.innerWidth ) * 2 - 1;
-mouse.y=- ( e.clientY / window.innerHeight ) * 2 + 1;
+mouse.x=(e.clientX / window.innerWidth) * 2 - 1;
+mouse.y=- (e.clientY / window.innerHeight) * 2 + 1;
 
 
-raycaster.setFromCamera( mouse, this.camera );
+raycaster.setFromCamera(mouse, this.camera);
 
 
-const intersects=raycaster.intersectObject( this.navmesh );
+const intersects=raycaster.intersectObject(this.navmesh);
 
 
 if (intersects.length>0){
@@ -269,58 +280,58 @@ const point=intersects[0].point;
 let group=aaa.pathfinder.get_group(point,true);
 
 
-console.log("[GROUP]: "+group+" [AGENT]: "+this.bots["0"].position.x+", "+this.bots["0"].position.y+", "+this.bots["0"].position.z+" [TARGET]: "+point.x+", "+point.y+", "+point.z);
+console.log("[GROUP]: "+group+" [AGENT]: "+agent.position.x+", "+agent.position.y+", "+agent.position.z+" [TARGET]: "+point.x+", "+point.y+", "+point.z);
 
 
 // 1. ИСПРАВЛЕН БАГ. ИСПРАВЛЕН CHANNEL, КОГДА ПРОКЛАДЫВАЛСЯ НЕВЕРНО ПУТЬ ЕСЛИ НАЧАЛЬНАЯ ТОЧКА НАХОДИЛАСЬ ЧУТЬ ЗА ГРАНИЦЕЙ ТРЕУГОЛЬНИКА, Т.Е. ТРЕУГОЛЬНИК НАХОДИЛСЯ ЧЕРЕЗ EPSILON,
 // А СТАРЫЙ CHANNEL НЕ СПРАВЛЯЛСЯ С ЭТИМ И ПРОКЛАДЫВАЛ ПУТЬ НЕ К ТОЙ ВЕРШИНЕ ТРЕУГОЛЬНИКА, Т.Е. НАДО БЫЛО К ПЕРЕДНЕЙ, А ОН К ТОЙ ЧТО СБОКУ.
 // 2. ИСПРАВЛЕН БАГ. КОГДА 2 ЦЕНТРОИДА ПО РАССТОЯНИЮ ПОЧТИ ОДИНАКОВЫ, НО ПО ПОГРЕШНОСТИ ВЫБИРАЕТСЯ ДВА ЭТИХ ТРЕУГОЛЬНИКА И ТАК КАК ПЕРВЫЙ БЛИЖЕ ПО ЦЕНТРОИДУ ТО ТОЧКА СТАВИТСЯ НАЗАД. ИСПРАВЛЯЕТСЯ СОРТИРОВКОЙ ПО РАССТОЯНИЮ ДО ГРАНИ.
 // 3. ИСПРАВЛЕН БАГ. ОТСУТСТВИЯ НАЧАЛЬНОГО ЦЕНТРОИДА, ОТЧЕГО ПО ВОЗДУХУ ИДЁТ
-//this.bots["0"].position.set( -3.452511259684619, 2.37, 1.452511259684619  );
+//agent.position.set(-3.452511259684619, 2.37, 1.452511259684619 );
 //point.set(-3.6276350102482864, 2.2185841885412847, 2.0095574830372307);
 // 4. ИСПРАВЛЕН БАГ. КОГДА ТОЧКА ПРЯМО НА ВЕРШИНЕ ТРЕУГОЛЬНИКА. НА СКЛОНЕ ВНИЗУ. ИСПРАВЛЯЕТСЯ В CHANNEL
-//this.bots["0"].position.set(-3.32, 0.97, 3.72);
+//agent.position.set(-3.32, 0.97, 3.72);
 //point.set(-3.50, 1.058, 3.61);
 // 5. ИСПРАВЛЕН БАГ. КОГДА ТОЧКА ПРЯМО НА ВЕРШИНЕ ТРЕУГОЛЬНИКА. НАВЕРХУ. ИСПРАВЛЯЕТСЯ В CHANNEL
-//this.bots["0"].position.set(0.34, 2.77, -1.26);
+//agent.position.set(0.34, 2.77, -1.26);
 //point.set(-0.8931065285511197, 2.651784525332509, 0.05150826370948902);
 // 6. ИСПРАВЛЕН БАГ. ПРЯМО НА ВЕРШИНЕ НАВЕРХУ
-//this.bots["0"].position.set( -3.41,2.37,1.41 );
+//agent.position.set(-3.41,2.37,1.41);
 //point.set(-2.720378940111204, 0.3700000047683716, 3.4526808854706905); 
 // 7. ИСПРАВЛЕН БАГ. ВЕРНУЛАСЬ КРАСНАЯ ЛИНИЯ 1
-//this.bots["0"].position.set(-3.478073965898358, 0.7173993984772022, 3.9521666149803836);
+//agent.position.set(-3.478073965898358, 0.7173993984772022, 3.9521666149803836);
 //point.set(-3.463703013714201, 0.5617200556352273, 4.108295915346434);
 // 8. ИСПРАВЛЕН БАГ. ВЕРНУЛАСЬ КРАСНАЯ ЛИНИЯ 2
-//this.bots["0"].position.set(-3.40, 0.865, 3.72);
+//agent.position.set(-3.40, 0.865, 3.72);
 //point.set(-3.50, 1.058, 3.61);
 // 9. ИСПРАВЛЕН БАГ. ВЕРНУЛАСЬ КРАСНАЯ ЛИНИЯ 3
-//this.bots["0"].position.set(-3.04351, 0.40135, 3.91410);
+//agent.position.set(-3.04351, 0.40135, 3.91410);
 //point.set(-3.39174, 0.803802, 3.808372);
 
-//this.bots["0"].position.set(-0.38, 0.7, 0.25);
+//agent.position.set(-0.38, 0.7, 0.25);
 //point.set(0.12, 0.5, -0.25);
-//this.bots["0"].position.set(-0.25, 0.5, 0.25);
+//agent.position.set(-0.25, 0.5, 0.25);
 //point.set(0.3, 0.5, -0.25);
-//this.bots["0"].position.set(0.13337104273375303, 0.5, 0.35209146198768315);
+//agent.position.set(0.13337104273375303, 0.5, 0.35209146198768315);
 //point.set(-0.3152678501347033, 0.5, -0.2729427903019624);
 
-//this.bots["0"].position.y=0.67;
+//agent.position.y=0.67;
 
 
 // 10. В ЯЧЕЙКЕ И ПОДНОЖЬЯ НЕ НАХОДИТ, ЕСЛИ ДИСТАНЦИЯ ПО ОСИ Y МАЛЕНЬКАЯ
-//this.bots["0"].position.set(-3.4830583976942484,0.7155065434766102,3.939488130195736);
+//agent.position.set(-3.4830583976942484,0.7155065434766102,3.939488130195736);
 //point.set(-3.998175472547385,0.5557438782371924,4.202907873977528);
 
 // 11.
-//this.bots["0"].position.set(-2.7441617701057806, 0.37, 3.546582267948036);
+//agent.position.set(-2.7441617701057806, 0.37, 3.546582267948036);
 //point.set(0.8838717574673574, 2.6998064737143626, -1.8882783002032786);
 
 // 12. ТОЧКУ НАЧАЛА СТАВИТ ЗАДИ СЕБЯ. ИСПРАВЛЕНО В CHANNEL ЧЕРЕЗ EPSILON
-//this.bots["0"].position.set(-3.411250573734816, 0.57, 4.0217434965440475);
+//agent.position.set(-3.411250573734816, 0.57, 4.0217434965440475);
 //point.set(-4.263153269469018, 0.5477452310471687, 4.312222326918701);
 
 // 13. НЕВЕРНЫЙ ТРЕУГОЛЬНИК ВЫБИРАЛ. ИСПРАВЛЕНО В PATHFINDING GET_NODE_MARGIN УДАЛЕНИЕМ ОДНОГО SQUARE, Т.К. СЧИТАЛО НЕВЕРНО  
-//this.bots["0"].position.set(-3.213775490623269, 0.6076966510054417, 3.9257286853197475);
+//agent.position.set(-3.213775490623269, 0.6076966510054417, 3.9257286853197475);
 //point.set(-4.029041395539171, 2.3664538860321045, 1.0654076175405782);
 
 
@@ -333,7 +344,7 @@ this.crowd.new_path({x:point.x,y:point.y,z:point.z},true);
 }
 
 
-add_bot(options){
+add_agent(options){
 
 
 let name=options.name;
@@ -352,32 +363,83 @@ mesh[name].position.z*=global_scale;
 
 
 options.object=mesh[name];
+options.position.x=mesh[name].position.x;
+options.position.y=mesh[name].position.y;
+options.position.z=mesh[name].position.z;
 
 
 return this.crowd.add_agent(options);
-
 
 
 }
 
 
 resize(){
-this.camera.aspect=window.innerWidth / window.innerHeight;
+this.camera.aspect=window.innerWidth/window.innerHeight;
 this.camera.updateProjectionMatrix();
-this.renderer.setSize( window.innerWidth, window.innerHeight ); 
+this.renderer.setSize(window.innerWidth,window.innerHeight); 
 }
 
 
 loadEnvironment(){
 
+
 const self=this;
 
 
 GLTFLoader.load(
+`./models/vbn.glb`,
+function(gltf){
+gltf.scene.traverse(function(child){
+if(child.isMesh){
+child.material.color.set(0xffffff);
+child.material.side=2;
+child.name="level";
+child.castShadow=true;
+child.receiveShadow=true;
+self.scene.add(child);
+self.level=child;
+self.detail_mesh=child;
+self.load_other();
+}
+}
+);
+});
+
+
+}
+
+
+load_other(){
+	
+	
+const self=this;
+
+
+
+let TextureLoader=new THREE.TextureLoader();
+let tex=[];
+tex["floor"]=TextureLoader.load("./textures/stectile1quad.png");
+tex["floor"].colorSpace=THREE.SRGBColorSpace;
+tex["floor"].wrapS=tex["floor"].wrapT=THREE.RepeatWrapping;
+tex["floor"].repeat.set(30,30);
+tex["floor"].flipY=false;
+self.level.material.map=tex["floor"];
+tex["floor_n"]=TextureLoader.load("./textures/stectile1quad_local.png");
+tex["floor_n"].wrapS=tex["floor_n"].wrapT=THREE.RepeatWrapping;
+tex["floor_n"].repeat.set(30,30);
+tex["floor_n"].flipY=false;
+self.level.material.normalMap=tex["floor_n"];
+self.level.material.normalScale.set(5,5);
+
+
+GLTFLoader.load(
+
 
 `./models/level.nav.glb`,
 
-function ( gltf ) {
+
+function (gltf) {
 
 
 
@@ -416,7 +478,7 @@ p.setXYZ(i, x, y, z);
 }
   
   
-p.setXYZ(405, 0.30, 3.00, -1.26 );
+p.setXYZ(405, 0.30, 3.00, -1.26);
 p.setXYZ(406, p.getX(405), p.getY(405), p.getZ(406));
 p.setXYZ(407, p.getX(407), p.getY(405), p.getZ(405));  
 p.needsUpdate=true;
@@ -438,97 +500,110 @@ newPositions.push(p.getX(405),p.getY(405),p.getZ(405), p.getX(406),p.getY(406),p
 
 
 const test_geometry=new THREE.BoxGeometry(1, 1, 1,4,1,4);
-//test_geometry.translate( 0, 0.1, 0 );
+//test_geometry.translate(0, 0.1, 0);
 //child.geometry=test_geometry;
 
 
+self.navmesh=child;
 
-const mesh=new THREE.Mesh(child.geometry,new THREE.MeshBasicMaterial({
-wireframe:true,color:0x000000
-//wireframe:false,color:0x0000ff,transparent:true,opacity:0.5
-}));
+
+let mesh=new THREE.Mesh(child.geometry,new THREE.MeshBasicMaterial({color:0x00ffff,transparent:true,opacity:0.2}));
 mesh.position.copy(child.position);
 mesh.quaternion.copy(child.quaternion);
 mesh.position.y+=0.012*global_scale;
 mesh.name="island";
-gltf.scene.add(mesh);
-self.navmesh=child;
 self.scene.add(mesh);
 
 
-const platform=new THREE.Mesh(child.geometry, new THREE.MeshBasicMaterial({color:0xf0f0f0}));
-self.scene.add(platform);
+let mesh_navesh_wireframe=new THREE.Mesh(child.geometry,new THREE.MeshBasicMaterial({wireframe:true,color:0xffffff}));
+mesh_navesh_wireframe.position.copy(child.position);
+mesh_navesh_wireframe.quaternion.copy(child.quaternion);
+mesh_navesh_wireframe.position.y+=0.012*global_scale;
+self.scene.add(mesh_navesh_wireframe);
 
 
 }
 });
 
 
-let start_time_navmesh=performance.now();
+let start_time=performance.now();
 
-self.pathfinder.build_zone({zone_name:self.zone_name,geometry:self.navmesh.geometry,tolerance:1e-4,precision:2,max_slope_deviaton_dot:0.999,
-//navigation_grid_padding_xz:0.01,navigation_grid_padding_y:0.001,navigation_grid_cells_size_xz:0.2,navigation_grid_cells_size_y:0.2,
-navigation_grid_padding_xz:0.04*global_scale,navigation_grid_padding_y:0.04*global_scale,navigation_grid_cells_size_xz:0.1*global_scale,navigation_grid_cells_size_y:0.1*global_scale,
+
+let detail_mesh=self.detail_mesh.geometry.clone();
+if(detail_mesh.index){
+detail_mesh=detail_mesh.toNonIndexed();
+}
+detail_mesh=detail_mesh.attributes.position.array;
+
+
+self.pathfinder.build_zone({zone_name:self.zone_name,geometry:self.navmesh.geometry,detail_mesh,tolerance:1e-4,precision:2,max_slope_deviaton_dot:0.999,
+//navigation_grid_cells_padding_xz:0.01,navigation_grid_cells_padding_y:0.001,navigation_grid_cells_size_xz:0.2,navigation_grid_cells_size_y:0.2,
+navigation_grid_cells_padding_xz:0.04*global_scale,navigation_grid_cells_padding_y:0.04*global_scale,navigation_grid_cells_size_xz:0.1*global_scale,navigation_grid_cells_size_y:0.1*global_scale,
+navigation_detail_mesh_climb:0.7,navigation_detail_mesh_height:0.4,
+navigation_detail_mesh_max_slope_degrees:89,navigation_detail_mesh_cells_padding_xz:1.04*global_scale,navigation_detail_mesh_cells_padding_y:1.04*global_scale,navigation_detail_mesh_cells_size_xz:1.1*global_scale,navigation_detail_mesh_cells_size_y:1.1*global_scale,
 });
 
 
-console.log("navmesh: "+(performance.now()-start_time_navmesh));
-console.log("Nodes_2: "+self.pathfinder.zones.island.nodes_2.length);
-
-
+// УСТАНАВЛИВАЕМ ДАННЫЕ ТЕКУЩЕЙ КАРТЫ
 self.pathfinder.set_data("island");
 
 
 self.crowd=new crowd(self,true);
-self.bots_count=0;
-self.bots=self.crowd.agents;
-self.add_bot({name:String(self.bots_count++),radius:0.2,height:2});
+agents=self.crowd.agents;
+// УСТАНАВЛИВАЕМ ДАННЫЕ ТЕКУЩЕЙ КАРТЫ
+self.crowd.set_data("island");
 
 
-let node=self.pathfinder.get_node_exact(self.bots["0"].position);
-self.bots["0"].node_id=node.id;
+
+self.add_agent({name:String(agents_count++),radius:0.2,height:2,position:{x:0,y:0,z:0}});
 
 
-for(let n=0;n<9999;n++){
-self.add_bot({name:String(self.bots_count),radius:0.2,height:2});
-self.bots[String(self.bots_count)].node_id=node.id;
-self.bots_count++;
+let agent=agents["0"];
+let node=self.pathfinder.get_node_exact(agent.position);
+agent.node_id=node.id;
+agent.state=1;
+
+
+let get_detail_mesh_y_result=self.crowd.get_detail_mesh_y(agent);
+if(get_detail_mesh_y_result!==false){
+agent.position.y=get_detail_mesh_y_result;
 }
 
 
-self.crowd.set_data({nodes:self.pathfinder.zones["island"].nodes});
+for(let n=0;n<10;n++){
+	
+	
+self.add_agent({name:String(agents_count),radius:0.2,height:2,position:{x:0,y:0,z:0}});
+agent=agents[String(agents_count)];
+agent.node_id=node.id;
+agent.state=1;
+agents_count++;
 
 
-let start_time_convex=performance.now();
-helper["convex_polygon"]=navigation_helper.create_convex_polygon_helper(aaa.pathfinder.zones.island.nodes_2,0.01*global_scale);
-self.scene.add(helper["convex_polygon"]);
+let get_detail_mesh_y_result=self.crowd.get_detail_mesh_y(agent);
+if(get_detail_mesh_y_result!==false){
+agent.position.y=get_detail_mesh_y_result;
+}
 
 
-helper["graph_helper"]=navigation_helper.create_graph_helper(aaa.pathfinder.zones.island.nodes_2,0.02*global_scale,1*global_scale,0xffffff,0x4e84c4);
-self.scene.add(helper["graph_helper"]);
+}
 
 
-console.log("polygons_helper: "+(performance.now()-start_time_convex));
 
-
-console.log("ЯЧЕЕК: "+self.pathfinder.zones["island"].navigation_grid.cells_count);
-
-
-helper["navigation_grid"]=navigation_helper.navigation_grid_visualize(self.pathfinder.zones["island"].navigation_grid,0x00ff00);
+//helper["navigation_convex_polygon"]=navigation_helper.create_navigation_convex_polygon_helper(self.pathfinder.nodes_2,0.01*global_scale);
+//self.scene.add(helper["navigation_convex_polygon"]);
+//helper["navigation_graph"]=navigation_helper.create_navigation_graph_helper(self.pathfinder.nodes_2,0.02*global_scale,1*global_scale,0xffffff,0x4e84c4);
+//self.scene.add(helper["navigation_graph"]);
+//helper["navigation_abyss"]=navigation_helper.create_navigation_abyss_helper(self.pathfinder.nodes,self.pathfinder.vertices,0.016*global_scale);
+//self.scene.add(helper["navigation_abyss"]);
+//helper["navigation_nodes_labels"]=navigation_helper.create_navigation_nodes_labels_helper(self.pathfinder.nodes,1*global_scale,0.04*global_scale);
+//self.scene.add(helper["navigation_nodes_labels"]);
+//helper["navigation_detail_mesh_helper"]=navigation_helper.create_navigation_detail_mesh_helper(self.pathfinder.detail_mesh_nodes,0.01*global_scale,0x009000);
+//self.scene.add(helper["navigation_detail_mesh_helper"]);
+//helper["navigation_detail_mesh"]=navigation_helper.create_navigation_spatial_helper(self.pathfinder.navigation_detail_mesh,0x00ff00);
+//self.scene.add(helper["navigation_detail_mesh"]);
+//helper["navigation_grid"]=navigation_helper.create_navigation_spatial_helper(self.pathfinder.navigation_grid,0x00ff00);
 //self.scene.add(helper["navigation_grid"]);
-//navigation_helper.navigation_grid_clear(self.scene,helper["navigation_grid"]);
-
-
-let ss2=performance.now();
-const abyssDebugMesh=navigation_helper.createAbyssEdgesVisual(self.pathfinder.zones["island"].nodes,self.pathfinder.zones["island"].vertices,0.016*global_scale);
-self.scene.add(abyssDebugMesh);
-console.log("ГРАНИЦЫ: "+(performance.now()-ss2));
-
-
-let ss3=performance.now();
-const nodes_labels=navigation_helper.create_nodes_labels(self.pathfinder.zones["island"].nodes,1*global_scale,0.04*global_scale);
-self.scene.add(nodes_labels);
-console.log("НОМЕРА ТРЕУГОЛЬНИКОВ: "+(performance.now()-ss3));
 
 
 self.loading=false;
@@ -551,22 +626,22 @@ if(stats_show){ this.stats.update(); }
 
 
 this.timer.update();
-let dt=this.timer.getDelta();
+let delta_time=Math.min(this.timer.getDelta(),0.1);
 
 
 let start_time=performance.now();
 
 
-for(const agent_id in this.bots){
+for(const agent_id in agents){
 
 
-const agent=this.bots[agent_id];	
+const agent=agents[agent_id];	
 
 
 if(agent_id=="0"){ continue; }
 
 
-if(agent.next_path_point==0){
+if(agent.next_path_point==0 && agent.state==1){
 
 
 agent.next_path_point=1;
@@ -578,11 +653,15 @@ let node_end=this.pathfinder.zones["island"].nodes[node_end_id];
 
 // ЕСЛИ СТАРТОВЫЙ И КОНЕЧНЫЙ УЗЛЫ СОВПАДАЮТ
 if(agent.node_id==node_end_id){
+
+
 agent.corridor.length=1;
 agent.corridor[0]=agent.node_id;
 agent.path.length=2;
 agent.path[0]=agent.position;
 agent.path[1]=node_end.centroid;
+
+
 }
 
 
@@ -609,13 +688,43 @@ agent.path=desired_path;
 }
 
 
+let object=agent.object;
+
+
+let point=agent.path[agent.next_path_point];
+let object_quaternion=object.quaternion;
+
+
+let quaternion_x=object_quaternion._x;
+let quaternion_y=object_quaternion._y;
+let quaternion_z=object_quaternion._z;
+let quaternion_w=object_quaternion._w;
+
+
+object.lookAt(point.x,object.position.y,point.z);
+
+
+let agent_quaternion=agent.quaternion;
+agent_quaternion._x=object.quaternion._x;
+agent_quaternion._y=object.quaternion._y;
+agent_quaternion._z=object.quaternion._z;
+agent_quaternion._w=object.quaternion._w;
+
+
+object_quaternion._x=quaternion_x;
+object_quaternion._y=quaternion_y;
+object_quaternion._z=quaternion_z;
+object_quaternion._w=quaternion_w;
+
+
+
 }
 
 
 }
 
 
-this.crowd.update(dt);
+this.crowd.update(delta_time);
 
 
 let end_time=performance.now()-start_time;

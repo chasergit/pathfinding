@@ -7,6 +7,7 @@ let nodes;
 let vertices;
 let nodes_2;
 let groups;
+let detail_mesh_nodes;
 
 
 let unique_set=new Set();
@@ -15,9 +16,17 @@ let get_random_point_in_node_result={x:0,y:0,z:0};
 let max_distance_to_floor=0.2; // МАКСИМАЛЬНАЯ ДИСТАНЦИЯ ДО ПОВЕРХНОСТИ ТРЕУГОЛЬНИКА, ЧТОБЫ СЧИТАТЬ ЧТО ТОЧКА НАХОДИТСЯ НА НЁМ
 
 
-let navigation_grid_shift_x=17179869184; // 2^34
-let navigation_grid_shift_z=131072; // 2^17
-let navigation_grid_offset=65536; // СИММЕТРИЧНЫЙ СДВИГ ВО ВСЕ СТОРОНЫ КУБА
+// БУФЕР ДЛЯ СБОРА ТРЕУГОЛЬНИКОВ НА ОДИН КАДР
+let navigation_grid_found_nodes=new Int32Array(10000);
+let navigation_grid_found_count=0;
+// МАССИВ ФЛАГОВ УНИКАЛЬНОСТИ. ИНДЕКСИРУЕТСЯ ПО ID ТРЕУГОЛЬНИКА (ДО 1 000 000)
+let navigation_grid_nodes_visited_flags=new Int32Array(1000000); 
+let navigation_grid_search_id=0;
+
+
+let navigation_spatial_shift_x=17179869184; // 2^34
+let navigation_spatial_shift_z=131072; // 2^17
+let navigation_spatial_offset=65536; // СИММЕТРИЧНЫЙ СДВИГ ВО ВСЕ СТОРОНЫ КУБА
 
 
 let navigation_grid_cells_size_xz;
@@ -46,10 +55,44 @@ let navigation_grid_cells_min_y_num; // LOW, DOWN
 let navigation_grid_cells_max_y_num; // HIGH, UP
 
 
-// ____________________ is_point_in_triangle_2d_exact ____________________
+// БУФЕР ДЛЯ СБОРА ТРЕУГОЛЬНИКОВ НА ОДИН КАДР
+let navigation_detail_mesh_found_nodes=new Int32Array(10000);
+let navigation_detail_mesh_found_count=0;
+// МАССИВ ФЛАГОВ УНИКАЛЬНОСТИ. ИНДЕКСИРУЕТСЯ ПО ID ТРЕУГОЛЬНИКА (ДО 1 000 000)
+let navigation_detail_mesh_nodes_visited_flags=new Int32Array(1000000); 
+let navigation_detail_mesh_search_id=0;
 
 
-function is_point_in_triangle_2d_exact(node,point){
+let navigation_detail_mesh_cells_size_xz;
+let navigation_detail_mesh_cells_size_y;
+
+
+let navigation_detail_mesh_cells_array;
+let navigation_detail_mesh_cells_count;
+
+
+// ГЛОБАЛЬНЫЕ ГРАНИЦЫ ЯЧЕЕК В МЕТРАХ
+let navigation_detail_mesh_cells_min_x_meter; // LEFT
+let navigation_detail_mesh_cells_max_x_meter; // RIGHT
+let navigation_detail_mesh_cells_min_z_meter; // TOP
+let navigation_detail_mesh_cells_max_z_meter; // BOTTOM
+let navigation_detail_mesh_cells_min_y_meter; // LOW, DOWN
+let navigation_detail_mesh_cells_max_y_meter; // HIGH, UP
+
+
+// ГЛОБАЛЬНЫЕ ГРАНИЦЫ ЯЧЕЕК В НОМЕРАХ ЯЧЕЕК
+let navigation_detail_mesh_cells_min_x_num; // LEFT
+let navigation_detail_mesh_cells_max_x_num; // RIGHT
+let navigation_detail_mesh_cells_min_z_num; // TOP
+let navigation_detail_mesh_cells_max_z_num; // BOTTOM
+let navigation_detail_mesh_cells_min_y_num; // LOW, DOWN
+let navigation_detail_mesh_cells_max_y_num; // HIGH, UP
+
+
+// ____________________ is_point_in_triangle_2d_exact_boolean ____________________
+
+
+function is_point_in_triangle_2d_exact_boolean(node,point){
 
 
 const point_x=point.x;
@@ -135,13 +178,17 @@ const point_y=point.y;
 const point_z=point.z;
 
 
+/**
 // ИМЕННО ЗДЕСЬ ОПРЕДЕЛЯЕМ ПЕРЕМЕННУЮ, А НЕ В ФОРМУЛЕ. ТАК РАБОТАЕТ БЫСТРЕЕ
 const inv_ny=node.inv_ny;
 // НАХОДИМ РЕАЛЬНОЕ ЗНАЧЕНИЕ Y В ТОЧКЕ XZ
 const expected_y=-(node.nx*point_x+node.nz*point_z+node.plane_constant)*inv_ny;
+**/
+// ВЫРОЖДЕННЫЕ ТРЕУГОЛЬНИКИ УБРАНЫ, ТАК РАССЧИТАТЬ БЫСТРЕЕ
+const expected_y=node.scaled_nx*point_x+node.scaled_nz*point_z+node.scaled_constant;
 // СЧИТАЕМ РАЗНИЦУ МЕЖДУ ВЫСОТОЙ ТОЧКИ И РЕАЛЬНОЙ ПОВЕРХНОСТЬЮ СКЛОНА
 const difference_y=point_y-expected_y;
-// ВНЕ ОСТУПА
+// ВНЕ ОТСТУПА
 if(difference_y<-1 || difference_y>max_distance_to_floor){ return false; }
 
 
@@ -156,126 +203,6 @@ if(edge0>=0 && edge1>=0 && edge2>=0){ return difference_y; }
 
 
 return false;
-
-
-}
-
-
-// ____________________ is_point_in_triangle_3d_margin_no_y_checking ____________________
-
-
-/**
-margin_xz-ЭТО ОТСТУП В МЕТРАХ ПО ОСЯМ XZ. ЗАРАНЕЕ УМНОЖАЕМ НА СЕБЯ. ЕСЛИ НАДО 0.05, ТО ПЕРЕДАЁМ 0.0025. ДА 0.05*0.05=0.0025, А НЕ 0.25
-ЗАЩИТА УГЛОВ КАРТЫ: ДВУХСТОРОННИЙ CLAMP-ЗАЖИМ T ПРИНУДИТЕЛЬНО СТЯГИВАЕТ МАТЕМАТИКУ К ФИЗИЧЕСКИМ ВЕРШИНАМ НА ОСТРЫХ УГЛАХ, ИСКЛЮЧАЯ НАСЛОЕНИЕ ТРЕУГОЛЬНИКОВ.
-ИДЕАЛЬНЫЕ ШВЫ И СТЫКИ: ЭВРИСТИКА min_square_xz > 0.00001 НИВЕЛИРУЕТ ДРЕБЕЗГ ЧИСЕЛ С ПЛАВАЮЩЕЙ ТОЧКОЙ В JS, СОХРАНЯЯ АСИММЕТРИЮ И СКОРОСТЬ РАННЕГО ВЫХОДА.
-**/
-
-
-/**
-ПРОВЕРКА inv_len===0 УБРАНА, Т.К. ИЗНАЧАЛЬНО УБРАЛИ ВЫРОЖДЕННЫЕ ТРЕУГОЛЬНИКИ ИЗ ГЕОМЕТРИИ ОБЪЕКТА
-const inv_len=node.inv_ab_length_sq_xz; 
-if(inv_len===0){
-min_square_xz=dxa*dxa+dza*dza;
-}else{
-**/
-
-
-function is_point_in_triangle_3d_margin_no_y_checking(node,point,margin_xz){
-
-
-const point_x=point.x;
-const point_y=point.y;
-const point_z=point.z;
-
-
-// ИМЕННО ЗДЕСЬ ОПРЕДЕЛЯЕМ ПЕРЕМЕННУЮ, А НЕ В ФОРМУЛЕ. ТАК РАБОТАЕТ БЫСТРЕЕ
-const inv_ny=node.inv_ny;
-// НАХОДИМ РЕАЛЬНОЕ ЗНАЧЕНИЕ Y В ТОЧКЕ XZ
-const expected_y=-(node.nx*point_x+node.nz*point_z+node.plane_constant)*inv_ny;
-
-
-// 2. ОПТИМИЗАЦИЯ ВЕКТОРОВ: Вычисляем дельты ОДИН раз для площадей и для проекций
-const dxa=point_x-node.ax; const dza=point_z-node.az;
-const dxb=point_x-node.bx; const dzb=point_z-node.bz;
-const dxc=point_x-node.cx; const dzc=point_z-node.cz;
-
-
-// Расчет знаковых площадей (Edge Function) с использованием кэшированных векторов
-const edge0=dxa*node.abz-dza*node.abx;
-const edge1=dxb*node.bcz-dzb*node.bcx;
-const edge2=dxc*node.caz-dzc*node.cax;
-
-
-let min_square_xz=Infinity;
-let outside=false;
-
-
-// РЕБРО 0: ОТРЕЗОК AB
-if(edge0<0){
-outside=true;
-const inv_len=node.inv_ab_length_sq_xz; 
-const abx=node.abx;
-const abz=node.abz;
-let t=(dxa*abx+dza*abz)*inv_len;
-if(t<0){ t=0; }
-else if(t>1){ t=1; }
-const diff_x=dxa-t*abx; 
-const diff_z=dza-t*abz;
-min_square_xz=(diff_x*diff_x)+(diff_z*diff_z);
-}
-
-
-// РЕБРО 1: ОТРЕЗОК BC
-if(edge1<0){
-outside=true;
-// ЗАЩИТА ШВА: УЧИТЫВАЕМ ДРЕБЕЗГ FLOAT В JS ЧЕРЕЗ ПОРОГ 0.00001
-if(min_square_xz>0.00001){ 
-const inv_len=node.inv_bc_length_sq_xz;
-let dist_sq=0;
-const bcx=node.bcx;
-const bcz=node.bcz;
-let t=(dxb*bcx+dzb*bcz)*inv_len;
-if(t<0){ t=0; }
-else if(t>1){ t=1; }
-const diff_x=dxb-t*bcx; 
-const diff_z=dzb-t*bcz;
-dist_sq=(diff_x*diff_x)+(diff_z*diff_z);
-if(dist_sq<min_square_xz){ min_square_xz=dist_sq; }
-}
-}
-
-
-// РЕБРО 2: ОТРЕЗОК CA
-if(edge2<0){
-outside=true;
-// ЗАЩИТА ШВА: УЧИТЫВАЕМ ДРЕБЕЗГ FLOAT В JS ЧЕРЕЗ ПОРОГ 0.00001
-if(min_square_xz>0.00001){ 
-const inv_len=node.inv_ca_length_sq_xz;
-let dist_sq=0;
-const cax=node.cax;
-const caz=node.caz;
-let t=(dxc*cax+dzc*caz)*inv_len;
-if(t<0){ t=0; }
-else if(t>1){ t=1; }
-const diff_x=dxc-t*cax; 
-const diff_z=dzc-t*caz;
-dist_sq=(diff_x*diff_x)+(diff_z*diff_z);
-if(dist_sq<min_square_xz){ min_square_xz=dist_sq; }
-}
-}
-
-
-if(!outside){ min_square_xz=0; }
-
-
-// ПРОВЕРЯЕМ ИТОГОВЫЙ МАРЖИН ТОЛЬКО ЕСЛИ ТОЧКА РЕАЛЬНО СНАРУЖИ
-if(outside && min_square_xz>margin_xz){ return false; }
-
-
-// СЧИТАЕМ КВАДРАТ ЧЕСТНОГО 3D РАССТОЯНИЯ (ТЕОРЕМА ПИФАГОРА)
-// КВАДРАТ ГИПОТЕНУЗЫ=КВАДРАТ КАТЕТА XZ+КВАДРАТ КАТЕТА Y
-// ЕСЛИ НАДО РЕАЛЬНОЕ РАССТОЯНИЕ, ТО ДОБАВЛЯЕМ Math.sqrt();
-return min_square_xz+difference_y*difference_y;
 
 
 }
@@ -307,14 +234,17 @@ const point_x=point.x;
 const point_y=point.y;
 const point_z=point.z;
 
-
+/**
 // ИМЕННО ЗДЕСЬ ОПРЕДЕЛЯЕМ ПЕРЕМЕННУЮ, А НЕ В ФОРМУЛЕ. ТАК РАБОТАЕТ БЫСТРЕЕ
 const inv_ny=node.inv_ny;
 // НАХОДИМ РЕАЛЬНОЕ ЗНАЧЕНИЕ Y В ТОЧКЕ XZ
 const expected_y=-(node.nx*point_x+node.nz*point_z+node.plane_constant)*inv_ny;
+**/
+// ВЫРОЖДЕННЫЕ ТРЕУГОЛЬНИКИ УБРАНЫ, ТАК РАССЧИТАТЬ БЫСТРЕЕ
+const expected_y=node.scaled_nx*point_x+node.scaled_nz*point_z+node.scaled_constant;
 // СЧИТАЕМ РАЗНИЦУ МЕЖДУ ВЫСОТОЙ ТОЧКИ И РЕАЛЬНОЙ ПОВЕРХНОСТЬЮ СКЛОНА
 const difference_y=point_y-expected_y;
-// ВНЕ ОСТУПА
+// ВНЕ ОТСТУПА
 if(difference_y<-2 || difference_y>max_distance_to_floor){ return false; }
 
 
@@ -324,7 +254,7 @@ const dxb=point_x-node.bx; const dzb=point_z-node.bz;
 const dxc=point_x-node.cx; const dzc=point_z-node.cz;
 
 
-// Расчет знаковых площадей (Edge Function) с использованием кэшированных векторов
+// РАСЧЕТ ЗНАКОВЫХ ПЛОЩАДЕЙ (EDGE FUNCTION) С ИСПОЛЬЗОВАНИЕМ КЭШИРОВАННЫХ ВЕКТОРОВ
 const edge0=dxa*node.abz-dza*node.abx;
 const edge1=dxb*node.bcz-dzb*node.bcx;
 const edge2=dxc*node.caz-dzc*node.cax;
@@ -352,8 +282,8 @@ min_square_xz=(diff_x*diff_x)+(diff_z*diff_z);
 // РЕБРО 1: ОТРЕЗОК BC
 if(edge1<0){
 outside=true;
-// ЗАЩИТА ШВА: УЧИТЫВАЕМ ДРЕБЕЗГ FLOAT В JS ЧЕРЕЗ ПОРОГ 0.00001
-if(min_square_xz>0.00001){ 
+// ЗАЩИТА ШВА: УЧИТЫВАЕМ ДРЕБЕЗГ FLOAT В JS ЧЕРЕЗ ЭТОТ ПОРОГ
+if(min_square_xz>margin_xz){ 
 const inv_len=node.inv_bc_length_sq_xz;
 let dist_sq=0;
 const bcx=node.bcx;
@@ -372,8 +302,8 @@ if(dist_sq<min_square_xz){ min_square_xz=dist_sq; }
 // РЕБРО 2: ОТРЕЗОК CA
 if(edge2<0){
 outside=true;
-// ЗАЩИТА ШВА: УЧИТЫВАЕМ ДРЕБЕЗГ FLOAT В JS ЧЕРЕЗ ПОРОГ 0.00001
-if(min_square_xz>0.00001){ 
+// ЗАЩИТА ШВА: УЧИТЫВАЕМ ДРЕБЕЗГ FLOAT В JS ЧЕРЕЗ ЭТОТ ПОРОГ
+if(min_square_xz>margin_xz){ 
 const inv_len=node.inv_ca_length_sq_xz;
 let dist_sq=0;
 const cax=node.cax;
@@ -419,9 +349,6 @@ this.zones={};
 }
 
 
-_is_point_in_triangle_3d_margin_no_y_checking=is_point_in_triangle_3d_margin_no_y_checking;
-
-
 // ____________________ build_zone ____________________
 
 
@@ -450,6 +377,16 @@ nodes=data.nodes;
 vertices=data.vertices;
 nodes_2=data.nodes_2;
 groups=data.groups;
+detail_mesh_nodes=data.detail_mesh_nodes;
+
+
+this.nodes=data.nodes;
+this.vertices=data.vertices;
+this.nodes_2=data.nodes_2;
+this.groups=data.groups;
+this.detail_mesh_nodes=data.detail_mesh_nodes;
+this.navigation_grid=data.navigation_grid;
+this.navigation_detail_mesh=data.navigation_detail_mesh;
 
 
 let navigation_grid=data.navigation_grid;
@@ -479,10 +416,34 @@ navigation_grid_cells_min_y_num=navigation_grid.cells_min_y_num;
 navigation_grid_cells_max_y_num=navigation_grid.cells_max_y_num;
 
 
+let navigation_detail_mesh=data.navigation_detail_mesh;
+
+
+navigation_detail_mesh_cells_size_xz=navigation_detail_mesh.cells_size_xz;
+navigation_detail_mesh_cells_size_y=navigation_detail_mesh.cells_size_y;
+
+
+navigation_detail_mesh_cells_array=navigation_detail_mesh.cells_array;
+navigation_detail_mesh_cells_count=navigation_detail_mesh.cells_count;
+
+
+navigation_detail_mesh_cells_min_x_meter=navigation_detail_mesh.cells_min_x_meter;
+navigation_detail_mesh_cells_max_x_meter=navigation_detail_mesh.cells_max_x_meter;
+navigation_detail_mesh_cells_min_z_meter=navigation_detail_mesh.cells_min_z_meter;
+navigation_detail_mesh_cells_max_z_meter=navigation_detail_mesh.cells_max_z_meter;
+navigation_detail_mesh_cells_min_y_meter=navigation_detail_mesh.cells_min_y_meter;
+navigation_detail_mesh_cells_max_y_meter=navigation_detail_mesh.cells_max_y_meter;
+
+
+navigation_detail_mesh_cells_min_x_num=navigation_detail_mesh.cells_min_x_num;
+navigation_detail_mesh_cells_max_x_num=navigation_detail_mesh.cells_max_x_num;
+navigation_detail_mesh_cells_min_z_num=navigation_detail_mesh.cells_min_z_num;
+navigation_detail_mesh_cells_max_z_num=navigation_detail_mesh.cells_max_z_num;
+navigation_detail_mesh_cells_min_y_num=navigation_detail_mesh.cells_min_y_num;
+navigation_detail_mesh_cells_max_y_num=navigation_detail_mesh.cells_max_y_num;
+
+
 }
-
-
-
 
 
 // ____________________ get_node_exact ____________________
@@ -507,7 +468,7 @@ let start_y=Math.floor(point_y/navigation_grid_cells_size_y);
 let end_y=Math.floor((point_y-max_distance_to_floor)/navigation_grid_cells_size_y);
 
 
-let cell_base_key=(x+navigation_grid_offset)*navigation_grid_shift_x+(z+navigation_grid_offset)*navigation_grid_shift_z;
+let cell_base_key=(x+navigation_spatial_offset)*navigation_spatial_shift_x+(z+navigation_spatial_offset)*navigation_spatial_shift_z;
 
 
 unique_set.clear();
@@ -517,7 +478,7 @@ found_nodes.length=0;
 for(let y=start_y;y>=end_y;y--){
 
 
-const cell_key=cell_base_key+(y+navigation_grid_offset);
+const cell_key=cell_base_key+(y+navigation_spatial_offset);
 let cell=navigation_grid_cells_array.get(cell_key);
    
    
@@ -566,14 +527,9 @@ return closest_node;
 // ____________________ get_node_margin ____________________
 
 
-// ПОИСК БЛИЖАЙШЕГО УЗЛА ПО ПОЗИЦИИ
-
-
 get_node_margin(position){
 
 
-let closest_node=null;
-let closest_distance_square=Infinity;
 let point_y=position.y;
 
 
@@ -581,22 +537,25 @@ const x=Math.floor(position.x/navigation_grid_cells_size_xz);
 const z=Math.floor(position.z/navigation_grid_cells_size_xz);
 
 
-// 2. Переводим начальную и конечную высоты Y в индексы сетки
 let start_y=Math.floor(point_y/navigation_grid_cells_size_y);
 let end_y=Math.floor((point_y-max_distance_to_floor)/navigation_grid_cells_size_y);
 
 
-let cell_base_key=(x+navigation_grid_offset)*navigation_grid_shift_x+(z+navigation_grid_offset)*navigation_grid_shift_z;
+let cell_base_key=(x+navigation_spatial_offset)*navigation_spatial_shift_x+(z+navigation_spatial_offset)*navigation_spatial_shift_z;
 
 
-unique_set.clear();
-found_nodes.length=0;
+navigation_grid_search_id=(navigation_grid_search_id+1) & 0x7FFFFFFF;
+if(navigation_grid_search_id===0){ navigation_grid_search_id=1; }
+
+
+const current_search_id=navigation_grid_search_id;
+navigation_grid_found_count=0;
 
 
 for(let y=start_y;y>=end_y;y--){
 
 
-const cell_key=cell_base_key+(y+navigation_grid_offset);
+const cell_key=cell_base_key+(y+navigation_spatial_offset);
 let cell=navigation_grid_cells_array.get(cell_key);
    
    
@@ -605,38 +564,22 @@ if(cell==undefined){ continue; }
 
 // ДОБАВЛЯЕМ ТОЛЬКО УНИКАЛЬНЫЕ ЗНАЧЕНИЯ
 for(let k=0;k<cell.length;k++){
-let item=cell[k];
-if(!unique_set.has(item)){
-unique_set.add(item);
-found_nodes[found_nodes.length]=item;
-}
-}
 
 
-}
-
-
-if(found_nodes.length==0){ return null; }
-
-
-for(let n=0,max=found_nodes.length;n<max;n++){
-
-
-let node=nodes[found_nodes[n]];
-
-
-let distance_square=is_point_in_triangle_3d_margin(node,position,0.0025);
-// ИМЕННО !==false, А НЕ !=false, Т.К. ЗНАЧЕНИЕ 0 ТОЖЕ СЧИТАЕТСЯ КАК false
-if(distance_square!==false && distance_square<closest_distance_square){
-closest_node=node;
-closest_distance_square=distance_square;
+let node_id=cell[k];
+if(navigation_grid_nodes_visited_flags[node_id]!==current_search_id){
+navigation_grid_nodes_visited_flags[node_id]=current_search_id;
+navigation_grid_found_nodes[navigation_grid_found_count++]=node_id;
 }
 
 
 }
 
 
-return closest_node;
+}
+
+
+return navigation_grid_found_count;
 
 
 }
@@ -764,7 +707,7 @@ const distance_to_plane=node.nx*point_x+node.ny*point_y+node.nz*point_z+node.pla
 if(distance_to_plane>-0.01 && distance_to_plane<0.01){
 
 
-if(is_point_in_triangle_2d_exact(node,position)){
+if(is_point_in_triangle_2d_exact_boolean(node,position)){
 return i;
 }
 
@@ -846,7 +789,7 @@ return get_random_point_in_node_result;
 // ____________________ find_path ____________________
 
 
-find_path(agent,end_position){
+find_simple_path(agent,end_position){
 
 
 let agent_path=agent.path;
