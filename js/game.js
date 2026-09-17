@@ -69,6 +69,8 @@ import * as THREE from "three";
 import * as THREE_GLTFLoader from "three/addons/loaders/GLTFLoader.js";
 import {GUI} from "three/addons/libs/lil-gui.module.min.js";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {RapierPhysics} from 'three/addons/physics/RapierPhysics.js';
+import {RapierHelper} from 'three/addons/helpers/RapierHelper.js';
 import {crowd} from "./crowd.js";
 import {pathfinding} from "./navigation/pathfinding.js";
 import {navigation_helper} from "./navigation/navigation_helper.js";
@@ -89,6 +91,200 @@ let GLTFLoader=new THREE_GLTFLoader.GLTFLoader();
 
 
 let global_scale=1;
+
+
+let physics;
+let physicsHelper;
+
+
+async function initPhysics(app){
+
+
+physics=await RapierPhysics();
+// 1. СНИЖАЕМ КОЛИЧЕСТВО ГЛОБАЛЬНЫХ ИТЕРАЦИЙ РЕШАТЕЛЯ (ПО УМОЛЧАНИЮ 4)
+physics.world.numSolverIterations=1; 
+// 2. СНИЖАЕМ КОЛИЧЕСТВО ВНУТРЕННИХ ИТЕРАЦИЙ (ПО УМОЛЧАНИЮ 1)
+physics.world.numInternalPgsIterations=1; 
+
+
+physicsHelper=new RapierHelper(physics.world);
+app.scene.add(physicsHelper);
+
+
+app.level.userData.physics={mass:0};
+physics.addScene(app.level);
+
+
+app.crowd.physics=physics;
+
+
+app.level.userData.physics.collider.setCollisionGroups(0x00010001);
+
+
+mesh["agent"]=new THREE.Mesh(new THREE.CapsuleGeometry(0.1,0.8,6,12),new THREE.MeshLambertMaterial({color:0xff0000}));
+mesh["agent"].castShadow=true;
+mesh["agent"].position.set(-3.3,4.9,4.24);
+app.scene.add(mesh["agent"]);
+physics.addMesh(mesh["agent"],1,0.0);
+mesh["agent"].userData.physics.body.setEnabledRotations(false,false,false,true);
+
+mesh["agent"].userData.physics.body.setEnabledTranslations(true,true,true,true);
+
+// ЧТОБЫ НЕ ПРОВАЛИВАЛОСЬ ПРИ БОЛЬШОЙ СКОРОСТИ, ЕСЛИ РАЗРЕШЕНО ДВИГАТЬСЯ ТОЛЬКО ПО ВЫСОТЕ
+//mesh["agent"].userData.physics.body.enableCcd(true);
+
+window.bbb=mesh["agent"].userData.physics.body;
+
+
+
+let castShape=new THREE.Mesh( new THREE.CapsuleGeometry( 0.2, 1.4, 8, 8 ).translate(0,0.9,0),
+new THREE.MeshStandardMaterial( {
+color:0x0000ff,
+wireframe:true
+} ) );
+castShape.position.set(-3.2551031682979894,0.7050960159301758,3.9332742378090075);
+app.scene.add( castShape );
+window.bbb=castShape;
+
+
+// Character Capsule
+const geometry=new THREE.CapsuleGeometry( 0.2, 1.4, 8, 8 ).translate(0,0.9,0);
+const material=new THREE.MeshStandardMaterial( { color: 0x0000ff } );
+let player=new THREE.Mesh( geometry, material );
+player.castShadow=true;
+player.position.set( -3.9622220216585347, 0.25, 4.542754443512194);
+app.scene.add( player );
+
+// 2. Создаем КИНЕМАТИЧЕСКОЕ тело для персонажа (это обязательно для CharacterController)
+let bodyDesc=physics.RAPIER.RigidBodyDesc.kinematicPositionBased();
+bodyDesc.setTranslation(player.position.x, player.position.y, player.position.z);
+let playerBody=physics.world.createRigidBody(bodyDesc);
+
+// 3. Создаем коллайдер и ПРИВЯЗЫВАЕМ его к телу
+const colliderDesc=physics.RAPIER.ColliderDesc.capsule(0.7, 0.2).setTranslation(0,0.9,0);
+// Привязываем коллайдер к созданному телу rigidBody
+let playerCollider=physics.world.createCollider(colliderDesc, playerBody);
+
+
+/**
+playerBody.enableCcd(true);// // НЕТ В createCharacterController. ЧТОБЫ НЕ ПРОВАЛИВАЛОСЬ ПРИ БОЛЬШОЙ СКОРОСТИ, ВКЛЮЧАЕМ НЕПРЕРЫВНУЮ ПРОВЕРКУ КОЛЛИЗИЙ
+playerCollider.setRestitution(0.0); // НЕТ В createCharacterController
+playerCollider.setFriction(0.0); // НЕТ В createCharacterController
+**/
+
+// Сохраняем ссылки для удобства доступа в цикле игры
+player.userData.body=playerBody;
+player.userData.collider=playerCollider;
+
+
+/**
+https://rapier.rs/docs/user_guides/javascript/character_controller/
+**/
+
+
+// 4. ИНИЦИАЛИЗИРУЕМ САМ КОНТРОЛЛЕР
+let characterController=physics.world.createCharacterController(0.01); // НЕ МЕНЯТЬ. ЗАЩИТНАЯ ПОДУШКА ОТ ЗАСТРЕВАНИЯ ВОКРУГ ВСЕЙ КАПСУЛЫ, А НЕ ТОЛЬКО СНИЗУ.
+characterController.setApplyImpulsesToDynamicBodies(true);
+//characterController.setCharacterMass(100); // НЕТ В createCharacterController
+// РАЗРЕШАЕМ АВТОМАТИЧЕСКИ ПОДНИМАТЬСЯ ПО СТУПЕНЬКАМ, РАЗ МЫ ИСПОЛЬЗУЕМ КОНТРОЛЛЕР
+characterController.enableAutostep(0.20,0.10,true); // СТАНДАРТ ДЛЯ СТУПЕНЕЙ И КАМНЕЙ (0.35,0.20,true). ВЫСОТА СТУПЕНЬКИ, МИНИМАЛЬНОЕ МЕСТО НА СТУПЕНЬКЕ. ПЕРЕШАГИВАТЬ ЛИ ДИНАМИЧЕСКИЕ ЯЩИКИ/БОЧКИ 
+characterController.enableSnapToGround(0.0); // ЛУЧШЕ СТАВИТЬ 0. ИНАЧЕ ВОЗЛЕ СТЕНЫ БУДЕТ НА 1 ИЛИ БОЛЕЕ КАДРОВ ПРИКРЕПЛЯТЬСЯ ПОТОМ РЕЗКО ОТЛЕПЛЯТЬСЯ ЧТО ВЫГЛЯДИТ ДЁРГАНО
+characterController.disableSnapToGround(); // ЕЩЁ ЛУЧШЕ ОТКЛЮЧИТЬ
+//characterController.disableAutostep();
+//characterController.setSlideEnabled(false);
+characterController.setMaxSlopeClimbAngle(60*Math.PI/180); // НА КАКОЙ УГОЛ ПОДЪЁМА МОЖНО ПОДНЯТЬСЯ. ЕСЛИ 90, ТО БУДЕТ НА СТЕНУ ЛЕЗТЬ СЛЕГКА
+// НЕ ВЛИЯЕТ НА СКОРОСТЬ ПОДЪЁМА. ЕСЛИ СТОИТ 30. ТО ПРИ ОСТАНОВКЕ ДВИЖЕНИЯ НА ПОДЪЁМЕ В 0-30 ГРАДУСОВ ПЕРСОНАЖ БУДЕТ СТОЯТЬ, А ВЫШЕ 30 ГРАДУСОВ БУДЕТ СКОЛЬЗИТЬ, ЕСЛИ ОСТАНОВИТСЯ
+characterController.setMinSlopeSlideAngle(50*Math.PI/180);
+
+
+
+player.userData.collider.setTranslation( player.position );
+
+
+app.crowd.player=player;
+app.crowd.characterController=characterController;
+
+
+
+
+
+
+
+app.add_agent({name:String(agents_count++),radius:0.1,height:0.8,position:{x:0,y:0,z:0}});
+
+
+let agent=agents["0"];
+let node=app.pathfinder.get_node_exact(agent.position);
+agent.node_id=node.id;
+agent.state=1;
+
+
+let get_detail_mesh_y_result=app.crowd.get_detail_mesh_y(agent);
+if(get_detail_mesh_y_result!==false){
+agent.position.y=get_detail_mesh_y_result;
+}
+
+
+agent.physics_body=mesh["agent"].userData.physics.body;
+
+
+
+
+
+GLTFLoader.load(
+`./models/soldier.glb`,
+function(gltf){
+//child.castShadow=true;
+//child.receiveShadow=true;
+//gltf.scene.position.set( -3.9622220216585347, 0.25, 4.542754443512194);
+app.crowd.agents["0"].object.add(gltf.scene);
+
+console.log(gltf.scene);
+let TextureLoader=new THREE.TextureLoader();
+let tex=[];
+tex["soldier_body_d"]=TextureLoader.load("./textures/soldier_body_d.png");
+tex["soldier_body_d"].colorSpace=THREE.SRGBColorSpace;
+tex["soldier_body_d"].wrapS=tex["soldier_body_d"].wrapT=THREE.RepeatWrapping;
+tex["soldier_body_d"].flipY=false;
+gltf.scene.children[1].children[0].material.map=tex["soldier_body_d"];
+gltf.scene.children[1].children[1].children[0].material.map=tex["soldier_body_d"];
+tex["soldier_head_d"]=TextureLoader.load("./textures/soldier_head_d.png");
+tex["soldier_head_d"].colorSpace=THREE.SRGBColorSpace;
+tex["soldier_head_d"].wrapS=tex["soldier_head_d"].wrapT=THREE.RepeatWrapping;
+tex["soldier_head_d"].flipY=false;
+gltf.scene.children[1].children[1].children[1].material.map=tex["soldier_head_d"];
+
+});
+
+
+
+
+
+
+
+for(let n=0;n<0;n++){
+	
+	
+app.add_agent({name:String(agents_count),radius:0.2,height:2,position:{x:0,y:0,z:0}});
+agent=agents[String(agents_count)];
+agent.node_id=node.id;
+agent.state=1;
+agents_count++;
+
+
+let get_detail_mesh_y_result=app.crowd.get_detail_mesh_y(agent);
+if(get_detail_mesh_y_result!==false){
+agent.position.y=get_detail_mesh_y_result;
+}
+
+
+}
+
+
+app.render();
+
+
+}
 
 
 class Game{
@@ -160,26 +356,26 @@ this.scene=new THREE.Scene();
 this.scene.background=new THREE.Color(0xaaaaff);
 
 
+let geometry=new THREE.BoxGeometry(3*global_scale,2.*global_scale,3*global_scale);
+geometry.translate(0,1.0*global_scale,0);
+let material=new THREE.MeshStandardMaterial({color:0xff0000,wireframe:true});
+let mesh_debug_meter=new THREE.Mesh(geometry,material);
+mesh_debug_meter.position.set(-3.37,0.26,4.27);
 
 
-
-const geometry=new THREE.BoxGeometry(1*global_scale,1*global_scale,1*global_scale);
-geometry.translate(0,0.5*global_scale,0);
-const material=new THREE.MeshStandardMaterial({color:0xff0000});
-const mesh_debug_meter=new THREE.Mesh(geometry,material);
 this.scene.add(mesh_debug_meter);
 
-console.log(this.scene);
-const ambient=new THREE.HemisphereLight(0x555555,0x999999);
+
+const ambient=new THREE.HemisphereLight(0x4282BE,0x21415F);
 this.scene.add(ambient);
 
 
-this.sun=new THREE.DirectionalLight(0xffffff,4.0);
+this.sun=new THREE.DirectionalLight(0xfff0e0,4.0);
 this.sun.position.set(0,10,5);
 this.sun.target.position.set(0,0,0);
 this.sun.castShadow=true;
-this.sun.shadow.mapSize.width=2048; // 8192 - ВЫЗЫВАЕТ БОЛЬШУЮ НАГРУЗКУ НА ВИДЕОКАРТУ, ЕСЛИ ПОСТОЯННОЕ ОБНОВЛЕНИЕ ТЕНЕЙ
-this.sun.shadow.mapSize.height=2048; // 8192 - ВЫЗЫВАЕТ БОЛЬШУЮ НАГРУЗКУ НА ВИДЕОКАРТУ, ЕСЛИ ПОСТОЯННОЕ ОБНОВЛЕНИЕ ТЕНЕЙ
+this.sun.shadow.mapSize.width=2048; // 8192-ВЫЗЫВАЕТ БОЛЬШУЮ НАГРУЗКУ НА ВИДЕОКАРТУ, ЕСЛИ ПОСТОЯННОЕ ОБНОВЛЕНИЕ ТЕНЕЙ
+this.sun.shadow.mapSize.height=2048; // 8192-ВЫЗЫВАЕТ БОЛЬШУЮ НАГРУЗКУ НА ВИДЕОКАРТУ, ЕСЛИ ПОСТОЯННОЕ ОБНОВЛЕНИЕ ТЕНЕЙ
 this.sun.shadow.camera.near=1.0;
 this.sun.shadow.camera.far=2000;
 this.sun.shadow.camera.left=-10;
@@ -188,14 +384,15 @@ this.sun.shadow.camera.top=10;
 this.sun.shadow.camera.bottom=-10;
 this.sun.shadow.bias=0;
 this.sun.shadow.normalBias=0.01;
-this.sun.shadow.radius=0.2; // 1 - DEFAULT
-this.sun.shadow.blurSamples=2; // 8 - DEFAULT
-
+this.sun.shadow.radius=0.2; // 1-DEFAULT
+this.sun.shadow.blurSamples=2; // 8-DEFAULT
+this.sun.shadow.needsUpdate=true;
+this.sun.shadow.autoUpdate=true;
 this.scene.add(this.sun);
 
 
 this.renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:false,alpha:true,premultipliedAlpha:true,logarithmicDepthBuffer:false});
-this.renderer.setClearColor(0x000000,0); // ЦВЕТ И ПРОЗРАЧНОСТЬ ФОНА (alpha). 0 - НЕ ПРОЗРАЧНЫЙ, 1 - ПРОЗРАЧНЫЙ
+this.renderer.setClearColor(0x000000,0); // ЦВЕТ И ПРОЗРАЧНОСТЬ ФОНА (alpha). 0-НЕ ПРОЗРАЧНЫЙ, 1-ПРОЗРАЧНЫЙ
 this.renderer.setPixelRatio(window.devicePixelRatio);
 this.renderer.setSize(window.innerWidth,window.innerHeight);
 this.renderer.autoClear=false;
@@ -244,9 +441,6 @@ this.raycaster=new THREE.Raycaster();
 this.renderer.domElement.addEventListener("click",(e)=>this.raycast(e,this),false);
 
 
-this.loading=true;
-
-
 window.addEventListener("resize", this.resize.bind(this));
 
 
@@ -264,8 +458,8 @@ let mouse={x:0,y:0};
 let raycaster=this.raycaster;
 
 
-mouse.x=(e.clientX / window.innerWidth) * 2 - 1;
-mouse.y=- (e.clientY / window.innerHeight) * 2 + 1;
+mouse.x=(e.clientX / window.innerWidth) * 2-1;
+mouse.y=- (e.clientY / window.innerHeight) * 2+1;
 
 
 raycaster.setFromCamera(mouse, this.camera);
@@ -350,11 +544,21 @@ add_agent(options){
 let name=options.name;
 
 
-const geometry=new THREE.BoxGeometry(0.1*global_scale,0.2*global_scale,0.05*global_scale);
-geometry.translate(0,0.1*global_scale,0);
+const geometry=new THREE.BoxGeometry(options.radius*2*global_scale,options.height*global_scale,options.radius*global_scale);
+geometry.translate(0,options.height/2*global_scale,0);
 mesh[name]=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({color:0xff0000}));
 mesh[name].position.set(-3.213775490623269,0.6076966510054417,3.9257286853197475);
-mesh[name].position.set(-3.3745537771495986,0.5395085876936967,4.277031691637208);
+mesh[name].position.set(-3.3745537771495986,0.5395085876936967,4.30);
+
+
+//mesh[name].position.set(-3.495466088672724, 0.40273411455526986, 5.603071068437632);
+//mesh[name].position.set(-2.8528651593983714, 0.3872548898364522, 5.416119914328588);
+//mesh[name].position.set(-1.9730172487514859, 0.36645400524139404, 5.356743631219251);
+//mesh[name].position.set(-0.5632511195797912, 0.36645400524139404, 5.2386808923292);
+
+
+//mesh[name].position.set(-3.2551031682979894, 0.5664539933204651, 3.9332742378090075);
+//mesh[name].position.set(-4., 2.366, 0.80);
 
 
 mesh[name].position.x*=global_scale;
@@ -402,8 +606,7 @@ self.level=child;
 self.detail_mesh=child;
 self.load_other();
 }
-}
-);
+});
 });
 
 
@@ -431,6 +634,18 @@ tex["floor_n"].repeat.set(30,30);
 tex["floor_n"].flipY=false;
 self.level.material.normalMap=tex["floor_n"];
 self.level.material.normalScale.set(5,5);
+tex["floor_s"]=TextureLoader.load("./textures/stectile1quad_s.png");
+tex["floor_s"].wrapS=tex["floor_s"].wrapT=THREE.RepeatWrapping;
+tex["floor_s"].repeat.set(30,30);
+tex["floor_s"].flipY=false;
+self.level.material.roughnessMap=tex["floor_s"];
+//self.level.material.roughness=0.4;
+
+
+let CubeTextureLoader=new THREE.CubeTextureLoader();
+CubeTextureLoader.setPath("./textures/environment/");
+tex["environment_main"]=CubeTextureLoader.load(["lf.jpg","rt.jpg","up.jpg","dn.jpg","ft.jpg","bk.jpg"]);
+self.scene.background=tex["environment_main"];
 
 
 GLTFLoader.load(
@@ -555,39 +770,6 @@ self.crowd.set_data("island");
 
 
 
-self.add_agent({name:String(agents_count++),radius:0.2,height:2,position:{x:0,y:0,z:0}});
-
-
-let agent=agents["0"];
-let node=self.pathfinder.get_node_exact(agent.position);
-agent.node_id=node.id;
-agent.state=1;
-
-
-let get_detail_mesh_y_result=self.crowd.get_detail_mesh_y(agent);
-if(get_detail_mesh_y_result!==false){
-agent.position.y=get_detail_mesh_y_result;
-}
-
-
-for(let n=0;n<10;n++){
-	
-	
-self.add_agent({name:String(agents_count),radius:0.2,height:2,position:{x:0,y:0,z:0}});
-agent=agents[String(agents_count)];
-agent.node_id=node.id;
-agent.state=1;
-agents_count++;
-
-
-let get_detail_mesh_y_result=self.crowd.get_detail_mesh_y(agent);
-if(get_detail_mesh_y_result!==false){
-agent.position.y=get_detail_mesh_y_result;
-}
-
-
-}
-
 
 
 //helper["navigation_convex_polygon"]=navigation_helper.create_navigation_convex_polygon_helper(self.pathfinder.nodes_2,0.01*global_scale);
@@ -606,8 +788,8 @@ agent.position.y=get_detail_mesh_y_result;
 //self.scene.add(helper["navigation_grid"]);
 
 
-self.loading=false;
-self.render();
+initPhysics(self);
+
 
 
 }
@@ -622,11 +804,21 @@ render(){
 requestAnimationFrame(this.render.bind(this));
 
 
+if(this.nnn===undefined){ this.nnn=0; }
+this.nnn++;
+if(this.nnn<0){
+this.renderer.render(this.scene,this.camera);
+return;
+}
+else{
+this.nnn=0;
+}
 if(stats_show){ this.stats.update(); }
 
 
 this.timer.update();
 let delta_time=Math.min(this.timer.getDelta(),0.1);
+delta_time=0.016;
 
 
 let start_time=performance.now();
@@ -725,12 +917,20 @@ object_quaternion._w=quaternion_w;
 
 
 this.crowd.update(delta_time);
+//physics.step(delta_time);
 
 
 let end_time=performance.now()-start_time;
 
 
 document.getElementById("total_time").innerHTML=end_time.toFixed(4);
+
+
+if(physicsHelper){ physicsHelper.update(); }
+
+
+//const position=this.crowd.player.userData.collider.translation();
+//this.crowd.player.position.set( position.x, position.y, position.z );
 
 
 if(stats_show && gpu_stats_shader_name==""){ gpu_stats.startQuery(); }

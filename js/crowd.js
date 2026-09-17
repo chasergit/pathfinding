@@ -2,6 +2,13 @@ import * as THREE from "three";
 
 
 /**
+
+
+// ДЛЯ КАЖДОЙ КАРТЫ ЗНАЧЕНИЯ navigation_detail_mesh_climb И navigation_detail_mesh_height МОГУТ ОТЛИЧАТЬСЯ. ЧТОБЫ ВЫСТАВИТЬ ВЕРНЫЕ, СМОТРЕТЬ НА КАРТУ И ПРИМЕРНО ВЫЧИСЛЯТЬ ВЫСОТЫ
+navigation_detail_mesh_climb СТАВИТЬ С ЗАПАСОМ +0.01. МАКСИМАЛЬНАЯ ВЫСОТА ОТ ТРЕУГОЛЬНИКА DETAIL MESH ДО НАВИГАЦИОННОЙ СЕТКИ. КОГДА ТРЕУГОЛЬНИК НАХОДИТСЯ ПОД НАВИГАЦИОННОЙ СЕТКОЙ
+navigation_detail_mesh_height СТАВИТЬ С ЗАПАСОМ +0.01. МАКСИМАЛЬНАЯ ВЫСОТА ОТ ТРЕУГОЛЬНИКА DETAIL MESH ДО НАВИГАЦИОННОЙ СЕТКИ. КОГДА ТРЕУГОЛЬНИК НАХОДИТСЯ НАД НАВИГАЦИОННОЙ СЕТКОЙ
+
+
 В функции move_along_surface стоит отталкивание от стен со значениями 0.0001 и 0.9999 — это финальный, полностью безопасный вариант. Бот не застрянет и не упадёт.
 Отталкивание 0.0001 процент не надо менять на смещение в 0.1мм. Здесь надо именно процент, чтобы на треугольнике в 100м было отталкивание в 1см, а не 0.1мм.
 Отталкивание должно быть пропорционально размеру треугольника, поэтому используем процент.
@@ -13,7 +20,30 @@ import * as THREE from "three";
 2. Баг "Микроскопической геометрии".
 Если на карте треугольник NavMesh размером с пуговицу (например, шириной 0.0005 метра), то ограничение 0.0001 и 0.9999 просто "сожрёт" всю длину ребра, и бот не сможет развернуться на этом треугольнике.
 Решение: при запекании NavMesh выставлять минимальный размер ячейки (Min Region Size) хотя бы в 10–20 сантиметров. Навигационной сетке не нужна микроскопическая детализация.
+
+
 **/
+
+
+/**
+ОТСТУП ПО ВЫСОТЕ ДЛЯ ФИЗИКИ RAPIER.JS РАВНЫЙ createCharacterController(0.01);
+ЕСЛИ ПОСТАВИТЬ get_detail_mesh_y_offset=0, ТО ПРИ ВКЛЮЧЕНИИ ФИЗИКИ БУДЕТ ВИДНО КАК ПЕРСОНАЖ НА 0.01М ПЛАВНО ИЛИ РЕЗКО ПОДНИМАЕТСЯ ВВЕРХ
+**/
+let get_detail_mesh_y_offset=0.01;
+
+
+// БЕРЁМ ИЗ RAPIER.JS
+let physics_QueryFilterFlags_EXCLUDE_FIXED=1; 
+let physics_QueryFilterFlags_EXCLUDE_KINEMATIC=2;
+let physics_QueryFilterFlags_EXCLUDE_DYNAMIC=4;
+let physics_QueryFilterFlags_EXCLUDE_SENSORS=8;
+let physics_QueryFilterFlags_EXCLUDE_SOLIDS=16;
+let physics_QueryFilterFlags_ONLY_DYNAMIC=3;
+let physics_QueryFilterFlags_ONLY_KINEMATIC=5;
+let physics_QueryFilterFlags_ONLY_FIXED=6;
+
+
+/** ____________________ ОСТАЛЬНОЕ НАСТРАИВАТЬ НЕ НАДО ____________________ **/
 
 
 let agents={};
@@ -65,8 +95,8 @@ let navigation_grid_cells_min_y_num; // LOW, DOWN
 let navigation_grid_cells_max_y_num; // HIGH, UP
 
 
-let navigation_detail_mesh_climb=0; // СТАВИТЬ С ЗАПАСОМ +0.01. МАКСИМАЛЬНАЯ ВЫСОТА УСТУПА/СТУПЕНЬКИ. Т.Е. ВЫСОТА ОТ ТРЕУГОЛЬНИКА ДО НАВИГАЦИОННОЙ СЕТКИ. КОГДА ТРЕУГОЛЬНИК НАХОДИТСЯ ПОД НАВИГАЦИОННОЙ СЕТКОЙ
-let navigation_detail_mesh_height=0; // СТАВИТЬ С ЗАПАСОМ +0.01. МАКСИМАЛЬНАЯ ВЫСОТА ОТ НАВИГАЦИОННОЙ СЕТКИ, КОТОРАЯ ПОД ТРЕУГОЛЬНИКОМ, ДО ВЕРХА ТРЕУГОЛЬНИКА
+let navigation_detail_mesh_climb=0;
+let navigation_detail_mesh_height=0;
 
 
 // БУФЕР ДЛЯ СБОРА ТРЕУГОЛЬНИКОВ НА ОДИН КАДР
@@ -103,6 +133,16 @@ let navigation_detail_mesh_cells_min_y_num; // LOW, DOWN
 let navigation_detail_mesh_cells_max_y_num; // HIGH, UP
 
 
+let physics_movement_vector={x:0,y:0,z:0};
+let physics_translation={x:0,y:0,z:0};
+let physics_final={x:0,y:0,z:0};
+
+
+let physics_castShape_position={x:0,y:0,z:0};
+let physics_castShape_rotation={w:1,x:0,y:0,z:0};
+let physics_castShape_velocity={x:0,y:-1,z:0};
+
+
 // ДОСТАТОЧНО 1000000 ТРЕУГОЛЬНИКОВ КАРТЫ
 let move_along_surface_search_nodes=new Array(1000000); 
 let move_along_surface_visited_flags=new Int32Array(1000000); 
@@ -131,7 +171,7 @@ parent_node_id:null
 }));
 
 
-// ____________________ move_along_surface_distance_point_to_segment_squared_2d_raw ____________________
+/** ____________________ MOVE_ALONG_SURFACE_DISTANCE_POINT_TO_SEGMENT_SQUARED_2D_RAW ____________________ **/
 
 
 function move_along_surface_distance_point_to_segment_squared_2d_raw(out,point,px,pz,qx,qz){
@@ -161,7 +201,7 @@ out.t=t;
 }
 
 
-// ____________________ is_point_in_triangle_2d_exact_boolean ____________________
+/** ____________________ IS_POINT_IN_TRIANGLE_2D_EXACT_BOOLEAN ____________________ **/
 
 
 function is_point_in_triangle_2d_exact_boolean(node,point){
@@ -184,7 +224,7 @@ return (edge0>=0 && edge1>=0 && edge2>=0);
 }
 
 
-// ____________________ move_along_surface ____________________
+/** ____________________ MOVE_ALONG_SURFACE ____________________ **/
 
 
 function move_along_surface(agent,start_position,end_position,filter,allow_abyss_fall){
@@ -220,6 +260,11 @@ move_along_surface_visited_flags[start_node_id]=current_search_id;
 let current_best_x=start_position.x;
 let current_best_y=start_position.y;
 let current_best_z=start_position.z;
+
+
+let previous_x=current_best_x;
+let previous_y=current_best_y;
+let previous_z=current_best_z;
 
 
 let best_distance=Infinity;
@@ -265,6 +310,12 @@ break;
 
 
 }
+
+
+// СОХРАНЯЕМ ПРЕДЫДУЩУЮ ПОЗИЦИЮ ДЛЯ ВЫЛЕТА
+previous_x=current_best_x;
+previous_y=current_best_y;
+previous_z=current_best_z;
 
 
 const ax=mesh_node.ax,ay=mesh_node.ay,az=mesh_node.az;
@@ -433,9 +484,13 @@ let node=nodes[result.node_id];
 
 // ЗДЕСЬ is_position_clamped_by_wall СРАБАТЫВАЕТ ЕСЛИ ОТКЛЮЧЕН allow_abyss_fall
 if(is_position_clamped_by_wall){
+
+
 result.position.x=current_best_x;
 result.position.y=current_best_y;
 result.position.z=current_best_z;
+
+
 }
 else{
 
@@ -474,7 +529,7 @@ if(!is_point_in_triangle_2d_exact_boolean(node,move_along_surface_search_positio
 const dir_x=node.centroid_x-current_best_x;
 const dir_z=node.centroid_z-current_best_z;
 const length=Math.sqrt(dir_x*dir_x+dir_z*dir_z);
-// ЧИСЛО 000001 АБСОЛЮТНО ВЕРНОЕ, МАТЕМАТИЧЕСКИ ОБОСНОВАННОЕ И ЯВЛЯЕТСЯ ИНДУСТРИАЛЬНЫМ СТАНДАРТОМ.
+// ЧИСЛО 0.000001 АБСОЛЮТНО ВЕРНОЕ, МАТЕМАТИЧЕСКИ ОБОСНОВАННОЕ И ЯВЛЯЕТСЯ ИНДУСТРИАЛЬНЫМ СТАНДАРТОМ.
 // ЕГО ЗАДАЧА-ЗАЩИТИТЬ ОТ ДЕЛЕНИЯ НА НОЛЬ ИЛИ ПОЛУЧЕНИЯ НЕВАЛИДНОГО ЗНАЧЕНИЯ Infinity.
 if(length>0.000001){
 // СМЕЩАЕМ ТОЧКУ РОВНО НА 0.1мм К ЦЕНТРУ ТРЕУГОЛЬНИКА
@@ -493,6 +548,8 @@ result.position.y=node.scaled_nx*result.position.x+node.scaled_nz*result.positio
 
 // ЕСЛИ НЕЛЬЗЯ ВЫХОДИТЬ ЗА РЕБРО, ТО ТОЧКА ВСЕГДА ВНУТРИ ТРЕУГОЛЬНИКА НАВИГАЦИИ
 if(!allow_abyss_fall){
+	
+	
 agent.node_id=result.node_id;
 agent.position.x=result.position.x;
 agent.position.y=result.position.y;
@@ -502,42 +559,77 @@ let get_detail_mesh_y_result=get_detail_mesh_y(agent);
 if(get_detail_mesh_y_result!==false){
 agent.position.y=get_detail_mesh_y_result;
 }
+
+
 }
 
 
 // ЕСЛИ РАЗРЕШЕНО ВЫХОДИТЬ ЗА РЕБРО. СНОВА ПРОВЕРЯЕМ ТОЧНО ЛИ СОШЁЛ С ТРЕУГОЛЬНИКА
 else{
-	
-
-if(is_point_in_triangle_2d_exact_boolean(node,result.position)===false){
 
 
-// ЧЕСТНЫЙ СХОД В ПРОПАСТЬ (EDGE SNAPPING И ФИЗИКА КАПСУЛЫ)
-// ЕСЛИ МЫ ДОШЛИ ДО ЭТОЙ ТОЧКИ, ЗНАЧИТ, ПОД ЦЕЛЬЮ РЕАЛЬНО ПУСТОТА
-// НАХОДИМ РЕБРО ПРОПАСТИ, ЧЕРЕЗ КОТОРОЕ ВЫЛЕТЕЛ ВЕКТОР ДВИЖЕНИЯ
+let result_position=result.position;
+let agent_position=agent.position;
 
 
-let edge_result=project_point_to_closest_abyss_edge(node,result.position);
- 
- 
-// ПРИНУДИТЕЛЬНО ВОЗВРАЩАЕМ КООРДИНАТЫ СТРОГО НА КРАЙ ПРОПАСТИ
-result.position.x=edge_result.x;
-result.position.z=edge_result.z;
-result.position.y=node.scaled_nx*result.position.x+node.scaled_nz*result.position.z+node.scaled_constant;
+if(is_point_in_triangle_2d_exact_boolean(node,result_position)===false){
 
 
-// ФИКСИРУЕМ КООРДИНАТЫ КРАЯ НА АГЕНТЕ, ЗАЩИЩАЯ ЕГО ОТ ПРОБИТИЯ СТЕН НИЖНИХ ЭТАЖЕЙ
-agent.position.x=result.position.x;
-agent.position.y=result.position.y;
-agent.position.z=result.position.z;
+//let edge_result=project_point_to_closest_abyss_edge(node,result_position);
 
 
 // СБРАСЫВАЕМ ТЕКУЩИЙ node_id, Т.К. ПОД НОГАМИ НИЧЕГО НЕТ
 agent.node_id=-1;
 
 
-// ААА-РОКИРОВКА: ПОЛНОСТЬЮ ОТКЛЮЧАЕМ НАВИГАЦИЮ И ПЕРЕДАЕМ УПРАВЛЕНИЕ ФИЗИКЕ ПОЛЕТА КАПСУЛЫ
-//agent.enable_capsule_physics_flight();
+result_position.x=previous_x;
+result_position.y=previous_y;
+result_position.z=previous_z;
+
+
+
+agent_position.x=previous_x;
+agent_position.y=previous_y;
+agent_position.z=previous_z;
+
+
+// ВЫЧИСЛЯЕМ ОСТАТОК ПУТИ В МЕТРАХ ДЛЯ СЦЕНАРИЯ А
+agent.air_wish_delta_x=current_best_x-previous_x;
+agent.air_wish_delta_z=current_best_z-previous_z;
+
+
+// СКОЛЬЗИМ ПО ПОВЕРХНОСТИ DETAIL MESH
+let detail_y_start=previous_y;
+
+
+// ЕСЛИ ВЫСОТА get_detail_mesh_y НЕ БУДЕТ НАЙДЕНА (ИЗ-ЗА НЕПРАВИЛЬНЫХ ПАРАМЕТРОВ, ЗАПЕКАНИЯ), ТО ОСТАНЕТСЯ ВЫСОТА ОТ НАВИГАЦИИ
+let get_detail_mesh_y_result=get_detail_mesh_y(agent);
+
+
+if(get_detail_mesh_y_result!==false){
+
+
+agent_position.y=get_detail_mesh_y_result;
+detail_y_start=get_detail_mesh_y_result;
+let detail_mesh_node=detail_mesh_nodes[get_detail_mesh_y_result_data.node_id];
+let nx=detail_mesh_node.scaled_nx;
+let nz=detail_mesh_node.scaled_nz;
+agent.slope_velocity_y=nx*agent.air_wish_delta_x+nz*agent.air_wish_delta_z;
+
+
+// НАЧАЛЬНАЯ ВЕРТИКАЛЬНАЯ СКОРОСТЬ БАЛЛИСТИКИ СВОБОДНОГО ПОЛЕТА ДЛЯ СЦЕНАРИЯ Б (М/С)
+// РАССЧИТЫВАЕТСЯ ПО ФОРМУЛЕ ПЛОСКОСТИ ДЕТАЛЬНОГО МЕША НА ПОЛНУЮ ДЛИНУ ШАГА
+const total_mesh_step_x=current_best_x-start_position.x;
+const total_mesh_step_z=current_best_z-start_position.z;
+agent.velocity.y=nx*total_mesh_step_x+nz*total_mesh_step_z;
+	
+
+}
+else{
+// СКОЛЬЗИМ ПО ПОВЕРХНОСТИ NAVIGATION MESH, ЕСЛИ НЕ БУДЕТ НАЙДЕН DETAIL MESH
+agent.slope_velocity_y=current_best_y-previous_y;
+agent.velocity.y=current_best_y-start_position.y;	
+}
 
 
 result.success=false;
@@ -548,15 +640,15 @@ else{
 	
 
 agent.node_id=result.node_id;
-agent.position.x=result.position.x;
-agent.position.z=result.position.z;
-agent.position.y=result.position.y;
+agent_position.x=result_position.x;
+agent_position.z=result_position.z;
+agent_position.y=result_position.y;
 
 
 // ЕСЛИ ВЫСОТА get_detail_mesh_y НЕ БУДЕТ НАЙДЕНА (ИЗ-ЗА НЕПРАВИЛЬНЫХ ПАРАМЕТРОВ, ЗАПЕКАНИЯ), ТО ОСТАНЕТСЯ ВЫСОТА ОТ НАВИГАЦИИ	
 let get_detail_mesh_y_result=get_detail_mesh_y(agent);
 if(get_detail_mesh_y_result!==false){
-agent.position.y=get_detail_mesh_y_result;
+agent_position.y=get_detail_mesh_y_result;
 }
 
 
@@ -572,22 +664,19 @@ return result;
 }
 
 
-// ____________________ step_agent ____________________
+/** ____________________ STEP_AGENT ____________________ **/
 
 
 let step_agent_desired_position={x:0,y:0,z:0};
  
 
-function step_agent(agent,dt){
-	
-	
-//agent.velocity.x=0;
-//agent.velocity.z=0.03;
+function step_agent(agent,delta_time){
 
 
-step_agent_desired_position.x=agent.position.x+agent.velocity.x*dt;
+
+step_agent_desired_position.x=agent.position.x+agent.velocity.x*delta_time;
 step_agent_desired_position.y=agent.position.y;
-step_agent_desired_position.z=agent.position.z+agent.velocity.z*dt;
+step_agent_desired_position.z=agent.position.z+agent.velocity.z*delta_time;
 
 
 /**
@@ -595,7 +684,7 @@ step_agent_desired_position.z=agent.position.z+agent.velocity.z*dt;
 **/
 
 
-if(agent.state===2){
+if(agent.state===34){
 	
 	
 agent.position.x=step_agent_desired_position.x;
@@ -709,9 +798,16 @@ console.log(visited_node_id);
 
 }
 else{
+	
+	
 agent.state=2;
+
+
+// ААА-РОКИРОВКА: ПОЛНОСТЬЮ ОТКЛЮЧАЕМ НАВИГАЦИЮ И ПЕРЕДАЕМ УПРАВЛЕНИЕ ФИЗИКЕ ПОЛЕТА КАПСУЛЫ
+//agent.enable_capsule_physics_flight();
+
+
 console.log("УЛЕТЕЛ");
-}
 
 
 }
@@ -720,7 +816,10 @@ console.log("УЛЕТЕЛ");
 }
 
 
-// ____________________ is_point_in_triangle_2d_exact_y ____________________
+}
+
+
+/** ____________________ IS_POINT_IN_TRIANGLE_2D_EXACT_Y ____________________ **/
 
 
 function is_point_in_triangle_2d_exact_y(node,point){
@@ -755,7 +854,7 @@ return false;
 }
 
 
-// ____________________ is_point_in_triangle_2d_margin_distance_square ____________________
+/** ____________________ IS_POINT_IN_TRIANGLE_2D_MARGIN_DISTANCE_SQUARE ____________________ **/
 
 
 let is_point_in_triangle_2d_margin_distance_square_result={closest_edge_index:-1,distance_square:0};
@@ -883,7 +982,7 @@ return true;
 }
 
 
-// ____________________ clamp_position_to_edge_2d ____________________
+/** ____________________ CLAMP_POSITION_TO_EDGE_2D ____________________ **/
 
 
 function clamp_position_to_edge_2d(position,edge_v1,edge_v2){
@@ -916,7 +1015,7 @@ position.z=edge_v1.z+clamped_t*dz;
 }
 
 
-// ____________________ get_nodes_list_navigation_grid ____________________
+/** ____________________ GET_NODES_LIST_NAVIGATION_GRID ____________________ **/
 
 
 function get_nodes_list_navigation_grid(position){
@@ -977,7 +1076,7 @@ return navigation_grid_found_count;
 }
 
 
-// ____________________ get_nodes_list_navigation_detail_mesh ____________________
+/** ____________________ GET_NODES_LIST_NAVIGATION_DETAIL_MESH ____________________ **/
 
 
 function get_nodes_list_navigation_detail_mesh(position,top,bottom){
@@ -1038,7 +1137,7 @@ return navigation_detail_mesh_found_count;
 }
 
 
-// ____________________ project_point_to_closest_abyss_edge ____________________
+/** ____________________ PROJECT_POINT_TO_CLOSEST_ABYSS_EDGE ____________________ **/
 
 
 let project_point_to_closest_abyss_edge_result={x:0,z:0};
@@ -1132,7 +1231,7 @@ return project_point_to_closest_abyss_edge_result;
 }
 
 
-// ____________________ steps_4 ____________________
+/** ____________________ STEPS_4 ____________________ **/
 
 
 function steps_4(agent,node,position,allow_abyss_fall){
@@ -1396,6 +1495,12 @@ return false;
 }
 
 
+/** ____________________ GET_DETAIL_MESH_Y ____________________ **/
+
+
+let get_detail_mesh_y_result_data={y:0,node_id:-1};
+
+
 function get_detail_mesh_y(agent){
 
 
@@ -1426,6 +1531,10 @@ let found_count=get_nodes_list_navigation_detail_mesh(agent_position,navigation_
 let px=agent_position.x;
 let py=agent_position.y;
 let pz=agent_position.z;
+
+
+let best_exact_node_id=-1;
+let best_closest_node_id=-1;
 
 
 // ПЕРЕМЕННЫЕ ЭТАПА 1 (ТОЧНОЕ БАРИЦЕНТРИЧЕСКОЕ ПОПАДАНИЕ)
@@ -1485,6 +1594,7 @@ if(u_num>=0 && v_num>=0 && (u_num+v_num)<=node.denom){
 // ИЩЕМ САМЫЙ ВЕРХНИЙ ПОЛ
 if(test_y>best_height){
 best_height=test_y;
+best_exact_node_id=node.id;
 }
 
 
@@ -1544,6 +1654,7 @@ if(is_closer_floor || is_same_floor_but_less_error){
 min_error=current_error;
 min_closest_delta_y=delta_y;
 closest_height=test_y;
+best_closest_node_id=node.id;
 } 
 
 
@@ -1553,9 +1664,17 @@ closest_height=test_y;
 
 
 // ВЫДАЕМ РЕЗУЛЬТАТ: ТОЧНЫЙ МАТЧ ВСЕГДА В АБСОЛЮТНОМ ПРИОРИТЕТЕ ВО ВСЕМ МАССИВЕ
-if(best_height!==-Infinity){ return best_height; }
+if(best_height!==-Infinity){
+get_detail_mesh_y_result_data.y=best_height;
+get_detail_mesh_y_result_data.node_id=best_exact_node_id;
+return best_height+get_detail_mesh_y_offset;
+}
 // ЕСЛИ ТОЧНОГО ПЛАНАРНОГО ПОПАДАНИЯ ВО ВСЕМ МАССИВЕ НЕ НАШЛОСЬ, ВОЗВРАЩАЕМ СПАСЕННЫЙ ШОВ НАШЕГО ЭТАЖА
-if(closest_height!==-Infinity){ return closest_height; }
+if(closest_height!==-Infinity){
+get_detail_mesh_y_result_data.y=closest_height;
+get_detail_mesh_y_result_data.node_id=best_closest_node_id;
+return closest_height+get_detail_mesh_y_offset;
+}
 
 
 // ПОД НОГАМИ НИЧЕГО НЕ НАЙДЕНО НА ТАКОЙ ДИСТАНЦИИ
@@ -1565,7 +1684,7 @@ return false;
 }
 
 
-// ____________________ is_grounded ____________________
+/** ____________________ IS_GROUNDED ____________________ **/
 
 
 function is_grounded(agent){
@@ -1588,22 +1707,22 @@ let best_floor_y=0;
 for(let i=0;i<found_count;i++){
 
 
-const node_id=navigation_detail_mesh_found_nodes[i];
-const navigation_detail_mesh_node=nodes[node_id];
+let node_id=navigation_detail_mesh_found_nodes[i];
+let node=detail_mesh_nodes[node_id];
 
 
-const test_y=is_point_in_triangle_2d_exact_y(navigation_detail_mesh_node,position);
+let test_y=is_point_in_triangle_2d_exact_y(node,agent_position);
 
 
 if(test_y!==false){
 
 
-const difference_y=position.y-test_y;
+let difference_y=agent_position.y-test_y;
 
 
 if(difference_y>=0 && difference_y<min_difference_y){
 min_difference_y=difference_y;
-best_node_id=navigation_detail_mesh_node.id;
+best_node_id=node_id;
 best_floor_y=test_y;
 }
 
@@ -1614,10 +1733,9 @@ best_floor_y=test_y;
 }
 
 
-// ЕСЛИ НАШЛИ ПОЛ-ПРИЗЕМЛЯЕМ БОТА
 if(best_node_id!==-1){
 
-
+/*
 console.log("get_nodes_list_navigation_detail_mesh "+agent.node_id);
 
 
@@ -1625,7 +1743,8 @@ agent.node_id=best_node_id;
 agent.position.x=position.x;
 agent.position.y=best_floor_y;
 agent.position.z=position.z;
-return true;
+*/
+return best_floor_y;
 
 
 }
@@ -1640,7 +1759,7 @@ return false;
 }
 
 
-// ____________________ set_target_direction ____________________
+/** ____________________ SET_TARGET_DIRECTION ____________________ **/
 
 
 function set_target_direction(agent){
@@ -1678,7 +1797,7 @@ object_quaternion._w=quaternion_w;
 }
 
 
-// ____________________ crowd ____________________
+/** ____________________ CROWD ____________________ **/
 
 
 class crowd{
@@ -1706,7 +1825,7 @@ this.get_detail_mesh_y=get_detail_mesh_y;
 }
 
 
-// ____________________ helpers_turn_on ____________________
+/** ____________________ HELPERS_TURN_ON ____________________ **/
 
 
 helpers_turn_on(){
@@ -1723,7 +1842,7 @@ this.mesh_crowd_helpers.visible=true;
 }
 
 
-// ____________________ helpers_turn_off ____________________
+/** ____________________ HELPERS_TURN_OFF ____________________ **/
 
 
 helpers_turn_off(){
@@ -1736,7 +1855,7 @@ this.mesh_crowd_helpers.visible=false;
 }
 
 
-// ____________________ helpers_create ____________________
+/** ____________________ HELPERS_CREATE ____________________ **/
 
 
 helpers_create(){
@@ -1747,7 +1866,7 @@ this.app.scene.add(this.mesh_crowd_helpers);
 
 
 // 10000 ЗАЙМЁТ 1.25МБ ПАМЯТИ
-this.mesh_agents_body=new THREE.InstancedMesh(new THREE.CapsuleGeometry(0.05,0.2,4,8).translate(0,0.15,0),new THREE.MeshLambertMaterial({color:0xff0000}),10000);
+this.mesh_agents_body=new THREE.InstancedMesh(new THREE.CapsuleGeometry(1.0,5.0,6,12).translate(0,3.5,0),new THREE.MeshLambertMaterial({color:0xff0000}),10000);
 this.mesh_agents_body.count=0;
 this.mesh_agents_body.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 this.mesh_agents_body.frustumCulled=false;
@@ -1838,7 +1957,7 @@ this.mesh_crowd_helpers.add(this.mesh_agents_clamp_step);
 }
 
 
-// ____________________ helpers_update ___________________
+/** ____________________ HELPERS_UPDATE ____________________ **/
 
 
 helpers_update(){
@@ -1879,6 +1998,9 @@ let agent=agents[agent_id];
 
 let position=agent.object.position;
 let offset=mesh_agents_body_count*16;
+mesh_agents_body_instanceMatrix_array[offset]=agent.radius;
+mesh_agents_body_instanceMatrix_array[offset+5]=agent.height/7;
+mesh_agents_body_instanceMatrix_array[offset+10]=agent.radius;
 mesh_agents_body_instanceMatrix_array[offset+12]=position.x;
 mesh_agents_body_instanceMatrix_array[offset+13]=position.y;
 mesh_agents_body_instanceMatrix_array[offset+14]=position.z;
@@ -2029,7 +2151,7 @@ this.mesh_agents_clamp_step.instanceMatrix.needsUpdate=true;
 }
 
 
-// ____________________ add_agent ____________________
+/** ____________________ ADD_AGENT ____________________ **/
 
 
 add_agent(options){
@@ -2077,9 +2199,10 @@ next_path_point:0,
 quaternion:{_x:0,_y:0,_z:0,_w:0},
 //position:options.object.position,
 position:options.position,
+before_position_y:0,
 visual_y:0,
 n_position:[0,0,0], // ЖЕЛАЕМАЯ ПОЗИЦИЯ
-velocity:{x:0,z:0}, // ТЕКУЩАЯ СКОРОСТЬ
+velocity:{x:0,y:0,z:0}, // ТЕКУЩАЯ СКОРОСТЬ
 n_velocity:[0,0,0], // ЖЕЛАЕМАЯ СКОРОСТЬ
 
 
@@ -2197,7 +2320,7 @@ return agent;
 }
 
 
-// ____________________ remove_agent ____________________
+/** ____________________ REMOVE_AGENT ____________________ **/
 
 
 remove_agent(id){
@@ -2213,7 +2336,7 @@ return false;
 }
 
 
-// ____________________ set_data ____________________
+/** ____________________ SET_DATA ____________________ **/
 
 
 set_data(zone_name){
@@ -2299,7 +2422,7 @@ navigation_detail_mesh_cells_max_y_num=navigation_detail_mesh.cells_max_y_num;
 }
 
 
-// ____________________ new_path ____________________
+/** ____________________ NEW_PATH ____________________ **/
 
 
 new_path(pt){
@@ -2344,10 +2467,10 @@ let clamped=this.pathfinder.clamp_step(nodes[agent.node_id],pt,agent.clamp_step_
 }
 
 
-// ____________________ move ____________________
+/** ____________________ MOVE ____________________ **/
 
 
-move(agent,dt){
+move(agent,delta_time){
 
 
 const speed=agent.speed;
@@ -2397,10 +2520,10 @@ velocity.z*=divide;
 agent.object.quaternion.slerp(agent.quaternion,0.1);
 
 
-let dt_speed=dt*0.1;
-velocity.x*=dt_speed;
-velocity.y*=dt_speed;
-velocity.z*=dt_speed;
+let delta_time_speed=delta_time*50;
+velocity.x*=delta_time_speed;
+velocity.y*=delta_time_speed;
+velocity.z*=delta_time_speed;
   
 
 velocity.y=0;
@@ -2410,8 +2533,14 @@ agent.velocity.x=velocity.x;
 agent.velocity.y=velocity.y;
 agent.velocity.z=velocity.z;
 
+/*
+agent.velocity.x=0-0.05;
+agent.velocity.x=0;
+agent.velocity.y=0;
+agent.velocity.z=-62.5/100;
+*/
 
-step_agent(agent,dt*300);
+step_agent(agent,delta_time);
 
 
 dx=agent.position.x-path_target_position.x;
@@ -2458,44 +2587,59 @@ set_target_direction(agent);
 }
 
 
-// ____________________ update ____________________
+/** ____________________ UPDATE ____________________ **/
 
 
-update(dt){
+update(delta_time){
+
+
+for(let agent_id in agents){
+
+
+let agent=agents[agent_id];
+
+
+let agent_position=agent.position;
+let agent_object_position=agent.object.position;
+
+
+agent.before_position_y=agent_position.y;
+
+
+if(agent.state===1){
+this.move(agent,delta_time);
+}
+
+
+/** ____________________ VISUAL_Y ____________________ **/
+
+
+// СГЛАЖИВАНИЕ ПОДЪЁМА ПО ЛЕСТНИЦЕ ВЫПОЛНЯЕМ ОТДЕЛЬНО, Т.К. ПОСЛЕ ДВИЖЕНИЯ, АГЕНТ МОГ СМЕНИТЬ state.
+// И ВЫПОЛНЯЕМ ТОЛЬКО КОГДА ИДЁТ ПО НАВИГАЦИИ, А ПРИ СХОДЕ С НЕЁ, ОТКЛЮЧАЕТСЯ И УЖЕ С ПОМОЩЬЮ КАПСУЛЫ ФИЗИКИ ПОДНИМАЕТСЯ
+
+
+if(agent.state===1){
 
 
 let smoothing_factor=15; // ЧЕМ ВЫШЕ, ТЕМ БЫСТРЕЕ ВИЗУАЛ ДОГОНЯЕТ ФИЗИКУ
-let base_step=Math.exp(-smoothing_factor*dt); // ЭКСПОНЕНЦИАЛЬНЫЙ ШАГ ДЕЛАЕТ ПЛАВНОСТЬ АБСОЛЮТНО ОДИНАКОВОЙ ПРИ ЛЮБОМ FPS
+let base_step=Math.exp(-smoothing_factor*delta_time); // ЭКСПОНЕНЦИАЛЬНЫЙ ШАГ ДЕЛАЕТ ПЛАВНОСТЬ АБСОЛЮТНО ОДИНАКОВОЙ ПРИ ЛЮБОМ FPS
 let stepThreshold=0.03; // 3 СМ — ЗОНА ДЛЯ ИГНОРИРОВАНИЯ ПЛАВНЫХ СКЛОНОВ
-let maxStepHeight=0.30; // МАКСИМАЛЬНАЯ ВЫСОТА ШАГА
+let maxStepHeight=0.30; // МАКСИМАЛЬНАЯ ВЫСОТА СТУПЕНИ/ПОДЪЁМА
 
 
-for(const agent_id in agents){
+let actualDeltaY=agent_position.y-agent.before_position_y;
 
 
-const agent=agents[agent_id];
-
-
-
-let y_before=agent.position.y;
-
-
-this.move(agent,dt);
-
-
-let actualDeltaY = agent.position.y - y_before;
-
-
-// ФИЛЬТРУЕМ: СГЛАЖИВАЕМ ТОЛЬКО РЕЗКИЕ СТУПЕНЧАТЫЕ СКАЧКИ ГЕОМЕТРИИ
+// ФИЛЬТРУЕМ:СГЛАЖИВАЕМ ТОЛЬКО РЕЗКИЕ СТУПЕНЧАТЫЕ СКАЧКИ ГЕОМЕТРИИ
 if(Math.abs(actualDeltaY)>stepThreshold){
 
 
 // Ограничиваем дельту одного шага рамками максимальной ступени
-const clampedDelta=Math.max(-maxStepHeight,Math.min(maxStepHeight,actualDeltaY));
+let clamped_delta_y=Math.max(-maxStepHeight,Math.min(maxStepHeight,actualDeltaY));
 
 
-// НАКОПЛЕНИЕ ОШИБКИ: ВЫЧИТАЕМ ДЕЛЬТУ ИЗ БУФЕРА
-agent.visual_y-=clampedDelta;
+// НАКОПЛЕНИЕ ОШИБКИ:ВЫЧИТАЕМ ДЕЛЬТУ ИЗ БУФЕРА
+agent.visual_y-=clamped_delta_y;
 
 
 // КЛЭМПИМ ОБЩИЙ БУФЕР ОШИБКИ, ЧТОБЫ ПРИ ПАДЕНИИ С ОБРЫВА ВИЗУАЛ НЕ ОТСТАВАЛ СЛИШКОМ СИЛЬНО
@@ -2505,23 +2649,169 @@ agent.visual_y=Math.max(-maxStepHeight,Math.min(maxStepHeight,agent.visual_y));
 }
 
 
-// ЖЕСТКО ПРИРАВНИВАЕМ ВИЗУАЛ К ЧЕСТНОЙ ФИЗИКЕ (НОГИ ГАРАНТИРОВАННО СТОЯТ НА ПЛОСКОСТИ КАДРА)
-agent.object.position.y =agent.position.y;
-
-
 // ПЛАВНО УМЕНЬШАЕМ БУФЕР ОШИБКИ ВО ВРЕМЕНИ (НЕЗАВИСИМО ОТ FPS)
 if(Math.abs(agent.visual_y)>0.001){ agent.visual_y*=base_step; }
-else{ agent.visual_y=0.0; }
+else{ agent.visual_y=0; }
 
 
-agent.object.position.y+=agent.visual_y;
-
-
-agent.object.position.x=agent.position.x;
-agent.object.position.z=agent.position.z;
+agent_object_position.x=agent_position.x;
+agent_object_position.y=agent_position.y+agent.visual_y-get_detail_mesh_y_offset;
+agent_object_position.z=agent_position.z;
 
 
 }
+
+
+}
+
+
+// ФИЗИКА
+
+
+for(let agent_id in agents){
+
+
+let agent=agents[agent_id];
+
+
+let agent_position=agent.position;
+let agent_object_position=agent.object.position;
+let agent_velocity=agent.velocity;
+
+
+/** ____________________ БОТ ЛЕТИТ УЖЕ ДАВНО ____________________ **/
+
+
+// СПЕРВА ИДЁТ state===3. ЧТОБЫ 3 СРАБОТАЛ В СЛЕДУЮЩЕМ КАДРЕ, КОГДА ПЕРЕКЛЮЧИТСЯ В state===2
+
+
+if(agent.state===3){
+
+
+// НАКАПЛИВАЕМ СКОРОСТЬ ГРАВИТАЦИИ И ОГРАНИЧИВАЕМ ЕЁ
+agent_velocity.y=Math.max(agent_velocity.y-9.81*delta_time,-40);
+
+
+// СБОРКА ВЕКТОРА ПЕРЕМЕЩЕНИЯ
+physics_movement_vector.x=agent_velocity.x*delta_time;
+physics_movement_vector.y=agent_velocity.y*delta_time;
+physics_movement_vector.z=agent_velocity.z*delta_time;
+
+
+// ВЫЧИСЛЕНИЕ ДВИЖЕНИЯ ЧЕРЕЗ RAPIER
+this.characterController.computeColliderMovement(this.player.userData.collider,physics_movement_vector);
+
+
+// ЗАБИРАЕМ ИТОГОВЫЙ, МАТЕМАТИЧЕСКИ ОТФИЛЬТРОВАННЫЙ СДВИГ
+let computedMovement=this.characterController.computedMovement();
+
+
+// ЗАПИСЫВАЕМ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ.
+// ЕСЛИ ВПЕРЕДИ ГЛУХАЯ СТЕНА-computedMove САМ СТАНЕТ РАВЕН 0 И БОТ ПРИЛИПНЕТ БЕЗ ОТСКОКОВ.
+// ЕСЛИ ВПЕРЕДИ ЛЕСТНИЦА-computedMove САМ ПОЙДЕТ ПО ДИАГОНАЛИ ВВЕРХ.
+physics_translation.x=computedMovement.x;
+physics_translation.y=computedMovement.y;
+physics_translation.z=computedMovement.z;
+
+
+// ЕСЛИ МЫ ХОТЕЛИ УПАСТЬ ВНИЗ ИЗ-ЗА ГРАВИТАЦИИ, НО ДВИЖОК ПРОПУСТИЛ НАС НА МЕНЬШЕЕ РАССТОЯНИЕ,
+// ЗНАЧИТ ПОД НОГАМИ ГАРАНТИРОВАННО ОКАЗАЛАСЬ ПОВЕРХНОСТЬ, СБРАСЫВАЕМ СКОРОСТЬ ПАДЕНИЯ 
+if(this.characterController.computedGrounded()){
+if(computedMovement.y<-0.001){
+agent_velocity.y=computedMovement.y/delta_time; 
+}
+else if(computedMovement.y>physics_movement_vector.y+0.00001 || Math.abs(computedMovement.y-physics_movement_vector.y)>=0.001){
+agent_velocity.y=0; 
+}
+}
+
+
+this.characterController.computeColliderMovement(this.player.userData.collider,physics_translation);
+let corrected_computedMovement=this.characterController.computedMovement();
+
+
+// ВЫЧИСЛЯЕМ НАКОПЛЕННУЮ КОНЕЧНУЮ 3D-ТОЧКУ КАДРА В ВОЗДУХЕ
+physics_final.x=agent_position.x+corrected_computedMovement.x;
+physics_final.y=agent_position.y+corrected_computedMovement.y;
+physics_final.z=agent_position.z+corrected_computedMovement.z;
+
+
+// ПЕРЕДАЕМ В RAPIER ФИНАЛЬНЫЕ КООРДИНАТЫ
+this.player.userData.body.setNextKinematicTranslation(physics_final);
+
+
+agent_position.x=physics_final.x;
+agent_position.y=physics_final.y;
+agent_position.z=physics_final.z;
+
+
+agent_object_position.x=agent_position.x;
+agent_object_position.y=agent_position.y-get_detail_mesh_y_offset;
+agent_object_position.z=agent_position.z;
+
+
+}
+
+
+/** ____________________ БОТ ВЫЛЕТЕЛ ТОЛЬКО ЧТО В ЭТОМ КАДРЕ ____________________ **/
+
+
+if(agent.state===2){
+
+
+agent.state=3;
+
+
+// ДОБАВЛЯЕМ НЕБОЛЬШОЙ ОТСТУП ВВЕРХ 0.001 (ЭТОГО ДОСТАТОЧНО), Т.К. ЭТО ПЕРВОЕ ПОЯВЛЕНИЕ НА РЕАЛЬНОЙ ПОВЕРХНОСТИ И ЕЁ ВЫСОТА В ФИЗИКЕ МОЖЕТ БЫТЬ СЛЕГКА ВЫШЕ,
+// Т.Е. ЕСЛИ НЕ СМЕСТИТЬ, ТО СЛЕГКА ЗАСТРЯНЕТ И ПОЙДЁТ НЕ ТУДА ИЛИ ПОДПРЫГНЕТ
+physics_translation.x=agent_position.x;
+physics_translation.y=agent_position.y+0.001;
+physics_translation.z=agent_position.z;
+
+
+this.player.userData.body.setTranslation(physics_translation,true);
+this.physics.step(0); // ОБЯЗАТЕЛЬНО ОБНОВЛЯЕМ СМЕЩЕНИЕ В ЭТОМ КАДРЕ, ИНАЧЕ computeColliderMovement НЕ УВИДИТ НОВОЕ ЗНАЧЕНИЕ
+
+
+physics_translation.x=agent.air_wish_delta_x;
+physics_translation.y=agent.slope_velocity_y;
+physics_translation.z=agent.air_wish_delta_z;
+
+
+agent_velocity.y/=delta_time;
+
+
+this.characterController.computeColliderMovement(this.player.userData.collider,physics_translation);
+const corrected_computedMovement=this.characterController.computedMovement();
+
+
+// ВЫЧИСЛЯЕМ НАКОПЛЕННУЮ КОНЕЧНУЮ 3D-ТОЧКУ КАДРА В ВОЗДУХЕ
+physics_final.x=agent_position.x+corrected_computedMovement.x;
+physics_final.y=agent_position.y+corrected_computedMovement.y;
+physics_final.z=agent_position.z+corrected_computedMovement.z;
+
+
+// ПЕРЕДАЕМ В RAPIER ФИНАЛЬНЫЕ КООРДИНАТЫ
+this.player.userData.body.setNextKinematicTranslation(physics_final);
+
+
+agent_position.x=physics_final.x;
+agent_position.y=physics_final.y;
+agent_position.z=physics_final.z;
+
+
+agent_object_position.x=agent_position.x;
+agent_object_position.y=agent_position.y-get_detail_mesh_y_offset;
+agent_object_position.z=agent_position.z;
+
+
+}
+
+
+}
+
+
+this.physics.step(delta_time);
 
 
 if(this.crowd_debug){
